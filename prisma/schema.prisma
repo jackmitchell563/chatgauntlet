@@ -1,0 +1,234 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String           @id @default(cuid())
+  name          String?
+  email         String           @unique
+  emailVerified DateTime?
+  password      String
+  image         String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  accounts      Account[]
+  sessions      Session[]
+  workspaces    WorkspaceMember[]
+  messages      Message[]
+  reactions     Reaction[]
+  notifications Notification[]
+  attachments   Attachment[]
+  auditLogs     AuditLog[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Workspace {
+  id          String            @id @default(cuid())
+  name        String
+  description String?
+  logo        String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  members     WorkspaceMember[]
+  channels    Channel[]
+  notifications Notification[]
+  auditLogs   AuditLog[]
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  role        Role      @default(MEMBER)
+  joinedAt    DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@index([workspaceId])
+}
+
+model Channel {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  type        ChannelType @default(PUBLIC)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  messages    Message[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+}
+
+model Message {
+  id          String        @id @default(cuid())
+  content     String        @db.Text
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  channel     Channel       @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  channelId   String
+  user        User         @relation(fields: [userId], references: [id])
+  userId      String
+  reactions   Reaction[]
+  edited      Boolean      @default(false)
+  attachments Attachment[]
+  deleted     Boolean      @default(false)
+  deletedAt   DateTime?
+  
+  // Thread fields
+  thread      Thread?      @relation("ThreadRoot")
+  threadId    String?      @unique
+  threadReplies Message[] @relation("ThreadReplies")
+  parentMessage Message?  @relation("ThreadReplies", fields: [parentMessageId], references: [id])
+  parentMessageId String?
+
+  @@index([channelId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([threadId])
+  @@index([parentMessageId])
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  emoji     String
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+
+  @@unique([messageId, userId, emoji])
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  name      String
+  type      String
+  url       String
+  size      Int
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+
+  @@index([messageId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  title     String
+  content   String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String
+  channelId String?
+  messageId String?
+
+  @@index([userId, read])
+  @@index([workspaceId])
+}
+
+model AuditLog {
+  id            String         @id @default(cuid())
+  action        AuditAction
+  entityType    String
+  entityId      String
+  description   String
+  metadata      Json?
+  createdAt     DateTime       @default(now())
+  user          User           @relation(fields: [userId], references: [id])
+  userId        String
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId   String
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([entityType, entityId])
+}
+
+model Thread {
+  id            String    @id @default(cuid())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  rootMessage   Message   @relation("ThreadRoot", fields: [rootMessageId], references: [id], onDelete: Cascade)
+  rootMessageId String    @unique
+
+  @@index([rootMessageId])
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ChannelType {
+  PUBLIC
+  PRIVATE
+  DM
+}
+
+enum NotificationType {
+  MENTION
+  REPLY
+  REACTION
+  CHANNEL_INVITATION
+  WORKSPACE_INVITATION
+  SYSTEM
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  INVITE
+  JOIN
+  LEAVE
+  PROMOTE
+  DEMOTE
+}
