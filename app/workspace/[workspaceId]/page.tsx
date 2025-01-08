@@ -23,6 +23,10 @@ export default function WorkspacePage() {
     }
   }>>([])
   const [isInitialLoad, setIsInitialLoad] = useState(true)
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
+  const [messages, setMessages] = useState<Array<any>>([])
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false)
 
   // Find the general channel or use the first channel as fallback
   const generalChannel = workspace.channels.find(channel => channel.name === 'general')
@@ -129,6 +133,95 @@ export default function WorkspacePage() {
     setSidebarWidth(width)
   }
 
+  const handleSearchResultClick = (messageId: string) => {
+    console.log('WorkspacePage: Search result clicked', {
+      messageId,
+      selectedChannelId,
+      searchQuery,
+      currentMessageId: selectedMessageId
+    })
+
+    // First set the message ID to trigger the scroll
+    setSelectedMessageId(messageId)
+
+    // Clear search query after a short delay to allow MessageArea to find the message
+    setTimeout(() => {
+      setSearchQuery('')
+    }, 100)
+  }
+
+  const handleShowFullSearch = (query: string) => {
+    console.log('WorkspacePage: Showing full search for query:', query)
+    setSearchQuery(query)
+  }
+
+  const handleSendMessage = async (content: string) => {
+    if (!selectedChannelId) return
+    
+    try {
+      const res = await fetch(`/api/channels/${selectedChannelId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ content }),
+      })
+
+      if (!res.ok) {
+        throw new Error('Failed to send message')
+      }
+    } catch (error) {
+      console.error('Error sending message:', error)
+    }
+  }
+
+  const handleAddReaction = async (messageId: string, emoji: { native: string }) => {
+    try {
+      const res = await fetch(`/api/messages/${messageId}/reactions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emoji: emoji.native,
+        }),
+      })
+
+      if (!res.ok) {
+        throw new Error('Failed to add reaction')
+      }
+    } catch (error) {
+      console.error('Error adding reaction:', error)
+    }
+  }
+
+  // Add effect to fetch messages when channel changes
+  useEffect(() => {
+    async function fetchMessages() {
+      if (!selectedChannelId || status !== 'authenticated') return
+      
+      setIsLoadingMessages(true)
+      try {
+        const res = await fetch(`/api/channels/${selectedChannelId}/messages`)
+        if (!res.ok) {
+          throw new Error('Failed to fetch messages')
+        }
+        const data = await res.json()
+        setMessages(data)
+      } catch (error) {
+        console.error('Error fetching messages:', error)
+      } finally {
+        setIsLoadingMessages(false)
+      }
+    }
+
+    fetchMessages()
+    
+    // Set up polling
+    const interval = setInterval(fetchMessages, 1000)
+    return () => clearInterval(interval)
+  }, [selectedChannelId, status])
+
   // If not authenticated, don't render anything
   if (status === 'unauthenticated') {
     return null
@@ -180,6 +273,8 @@ export default function WorkspacePage() {
         selectedChannelId={selectedChannelId}
         width={sidebarWidth}
         onResize={handleSidebarResize}
+        onSearchResultClick={handleSearchResultClick}
+        onShowFullSearch={handleShowFullSearch}
       />
       <div className="flex flex-col flex-1 min-w-0">
         <TopBar
@@ -190,16 +285,20 @@ export default function WorkspacePage() {
           onThemeChange={() => {}} // We'll implement this later
         />
         <MessageArea
+          key={selectedChannelId}
           channelId={selectedChannel?.id}
           channelName={selectedChannel?.type === 'DM' ? 
             getDMUserName(selectedChannel.name) : 
             selectedChannel?.name}
           channelType={selectedChannel?.type === 'DM' ? 'dm' : 'channel'}
-          messages={[]} // Initial messages will be fetched by the component
-          onSendMessage={() => {}} // Handled internally by MessageArea now
-          onAddReaction={() => {}} // Handled internally by MessageArea now
+          messages={messages}
+          onSendMessage={handleSendMessage}
+          onAddReaction={handleAddReaction}
           registerCleanup={registerCleanup}
           shouldScrollOnLoad={isInitialLoad}
+          searchQuery={searchQuery}
+          onSearchResultClick={handleSearchResultClick}
+          selectedMessageId={selectedMessageId}
         />
       </div>
     </>

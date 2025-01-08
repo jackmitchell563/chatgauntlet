@@ -14,6 +14,9 @@ import {
 } from './ui/dropdown-menu'
 import Image from 'next/image'
 import { useRouter } from 'next/navigation'
+import { useWorkspace } from '@/app/workspace/[workspaceId]/workspace-provider'
+import { SearchResults } from './SearchResults'
+import { useDebounce } from '@/app/hooks/useDebounce'
 
 interface Channel {
   id: string
@@ -24,6 +27,29 @@ interface Channel {
 interface DirectMessage {
   id: string
   name: string
+}
+
+interface SearchResult {
+  id: string
+  content: string
+  createdAt: string
+  user: {
+    id: string
+    name: string | null
+    image: string | null
+  }
+  reactions: {
+    id: string
+    emoji: string
+    user: {
+      id: string
+      name: string | null
+    }
+  }[]
+  thread?: {
+    id: string
+    messageCount: number
+  }
 }
 
 interface SidebarProps {
@@ -38,6 +64,8 @@ interface SidebarProps {
   selectedChannelId: string | null
   width: number
   onResize: (width: number) => void
+  onSearchResultClick: (messageId: string) => void
+  onShowFullSearch: (query: string) => void
 }
 
 export function Sidebar({ 
@@ -48,17 +76,48 @@ export function Sidebar({
   onDirectMessageSelect, 
   selectedChannelId,
   width,
-  onResize
+  onResize,
+  onSearchResultClick,
+  onShowFullSearch
 }: SidebarProps) {
   const { data: session } = useSession()
+  const { userStatuses, updateUserStatus } = useWorkspace()
   const [isChannelsSectionCollapsed, setIsChannelsSectionCollapsed] = useState(false)
   const [isDmSectionCollapsed, setIsDmSectionCollapsed] = useState(false)
   const [isResizing, setIsResizing] = useState(false)
   const [currentWidth, setCurrentWidth] = useState(width)
   const sidebarRef = useRef<HTMLDivElement>(null)
-  const [userStatus, setUserStatus] = useState('Active')
   const [customStatus, setCustomStatus] = useState('')
   const router = useRouter()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const debouncedSearchQuery = useDebounce(searchQuery, 300)
+
+  const userStatus = session?.user?.id ? userStatuses[session.user.id] || 'Active' : 'Active'
+
+  const handleStatusChange = useCallback((newStatus: string) => {
+    if (session?.user?.id) {
+      updateUserStatus(session.user.id, newStatus)
+    }
+  }, [session?.user?.id, updateUserStatus])
+
+  const handleCustomStatusChange = useCallback((newStatus: string) => {
+    setCustomStatus(newStatus)
+    if (session?.user?.id) {
+      updateUserStatus(session.user.id, newStatus.trim() || 'Active')
+    }
+  }, [session?.user?.id, updateUserStatus])
+
+  const toggleAwayStatus = useCallback(() => {
+    if (!session?.user?.id) return
+    
+    if (userStatus === 'Away') {
+      updateUserStatus(session.user.id, customStatus.trim() || 'Active')
+    } else {
+      updateUserStatus(session.user.id, 'Away')
+    }
+  }, [userStatus, customStatus, session?.user?.id, updateUserStatus])
 
   const handleChannelClick = (channel: Channel) => {
     onChannelSelect(channel)
@@ -82,27 +141,6 @@ export function Sidebar({
     const maxChars = Math.floor(maxWidth / charWidth);
     return text.length > maxChars ? text.slice(0, maxChars - 3) + '...' : text;
   };
-
-  const handleStatusChange = useCallback((newStatus: string) => {
-    setUserStatus(newStatus)
-  }, [])
-
-  const handleCustomStatusChange = useCallback((newStatus: string) => {
-    setCustomStatus(newStatus)
-    if (newStatus.trim()) {
-      setUserStatus(newStatus)
-    } else {
-      setUserStatus('Active')
-    }
-  }, [])
-
-  const toggleAwayStatus = useCallback(() => {
-    if (userStatus === 'Away') {
-      setUserStatus(customStatus.trim() || 'Active')
-    } else {
-      setUserStatus('Away')
-    }
-  }, [userStatus, customStatus])
 
   const handleSwitchWorkspaces = () => {
     router.push('/workspaces')
@@ -130,6 +168,65 @@ export function Sidebar({
       document.removeEventListener('mouseup', handleMouseUp)
     }
   }, [isResizing, onResize])
+
+  // Search effect
+  useEffect(() => {
+    async function performSearch() {
+      if (!selectedChannelId || !debouncedSearchQuery.trim()) {
+        setSearchResults([])
+        return
+      }
+
+      setIsSearching(true)
+      try {
+        const res = await fetch(
+          `/api/channels/${selectedChannelId}/search?` + 
+          new URLSearchParams({
+            query: debouncedSearchQuery,
+            limit: '5'
+          })
+        )
+        if (res.ok) {
+          const data = await res.json()
+          setSearchResults(data)
+        }
+      } catch (error) {
+        console.error('Error searching messages:', error)
+      } finally {
+        setIsSearching(false)
+      }
+    }
+
+    performSearch()
+  }, [debouncedSearchQuery, selectedChannelId])
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && searchQuery.trim()) {
+      onShowFullSearch(searchQuery)
+      setSearchQuery('')
+      setSearchResults([])
+    }
+  }
+
+  const handleSearchResultClick = (messageId: string) => {
+    console.log('Sidebar: Search result clicked', {
+      messageId,
+      selectedChannelId,
+      hasOnResultClick: !!onSearchResultClick
+    })
+    
+    // First, clear the search query and results
+    setSearchQuery('')
+    setSearchResults([])
+    console.log('Sidebar: Cleared search state')
+    
+    // Then notify parent of the click
+    if (onSearchResultClick) {
+      console.log('Sidebar: Calling parent onSearchResultClick')
+      onSearchResultClick(messageId)
+      console.log('Sidebar: Parent onSearchResultClick completed')
+    }
+  }
 
   return (
     <div 
@@ -166,8 +263,29 @@ export function Sidebar({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <div className="mb-4">
-        <Input type="text" placeholder="Search" className="w-full bg-gray-700" />
+      <div className="relative mb-4">
+        <Input 
+          type="text" 
+          placeholder="Search messages" 
+          className="w-full bg-gray-700"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
+        />
+        {(searchResults.length > 0 || isSearching) && searchQuery && (
+          <div className="absolute z-10 left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border max-h-96 overflow-y-auto">
+            {isSearching ? (
+              <div className="p-4 text-center text-gray-500">
+                Searching...
+              </div>
+            ) : (
+              <SearchResults
+                results={searchResults}
+                onResultClick={handleSearchResultClick}
+              />
+            )}
+          </div>
+        )}
       </div>
       <div className="mb-4">
         <h2 

@@ -94,13 +94,50 @@ export function WorkspaceProvider({
     }
   }, [userStatuses, workspace.id])
 
-  const updateUserStatus = useCallback((userId: string, status: string) => {
+  // Poll for status updates
+  useEffect(() => {
+    const pollStatuses = async () => {
+      try {
+        const res = await fetch(`/api/workspaces/${workspace.id}/status`)
+        if (res.ok) {
+          const data = await res.json()
+          setUserStatuses(data)
+        }
+      } catch (error) {
+        console.error('Error polling user statuses:', error)
+      }
+    }
+
+    // Poll every 5 seconds
+    const interval = setInterval(pollStatuses, 5000)
+    pollStatuses() // Initial poll
+
+    return () => clearInterval(interval)
+  }, [workspace.id])
+
+  const updateUserStatus = useCallback(async (userId: string, status: string) => {
     if (!userId) return
-    setUserStatuses(prev => ({
-      ...prev,
-      [userId]: status
-    }))
-  }, [])
+
+    try {
+      const res = await fetch(`/api/workspaces/${workspace.id}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId, status }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setUserStatuses(prev => ({
+          ...prev,
+          [userId]: status
+        }))
+      }
+    } catch (error) {
+      console.error('Error updating user status:', error)
+    }
+  }, [workspace.id])
 
   return (
     <WorkspaceContext.Provider

@@ -16,6 +16,7 @@ import Picker from '@emoji-mart/react'
 import Image from 'next/image'
 import { useWorkspace } from '@/app/workspace/[workspaceId]/workspace-provider'
 import { ThreadView } from './ThreadView'
+import { SearchResults } from './SearchResults'
 
 // Create a global flag for message polling
 let isPollingEnabled = true
@@ -65,6 +66,9 @@ interface MessageAreaProps {
   onAddReaction: (messageId: string, emoji: { native: string }) => void
   registerCleanup: (cleanup: () => void) => void
   shouldScrollOnLoad?: boolean
+  searchQuery?: string
+  onSearchResultClick?: (messageId: string) => void
+  selectedMessageId?: string | null
 }
 
 interface UserProfileProps {
@@ -78,6 +82,12 @@ interface UserProfileProps {
 function UserProfile({ user }: UserProfileProps) {
   const { userStatuses } = useWorkspace()
   const status = userStatuses[user.id] || 'Active'
+  
+  console.log('UserProfile: Rendering for user', {
+    userId: user.id,
+    status,
+    allStatuses: userStatuses
+  })
   
   return (
     <div className="p-4 w-72">
@@ -117,7 +127,10 @@ export function MessageArea({
   onSendMessage, 
   onAddReaction,
   registerCleanup,
-  shouldScrollOnLoad = false
+  shouldScrollOnLoad = false,
+  searchQuery,
+  onSearchResultClick,
+  selectedMessageId
 }: MessageAreaProps) {
   const { data: session, status } = useSession()
   const [newMessage, setNewMessage] = useState('')
@@ -142,15 +155,26 @@ export function MessageArea({
   const lastChannelIdRef = useRef<string | undefined>(channelId)
   const initialFetchRef = useRef(false)
   const shouldScrollRef = useRef(false)
+  const [threadOpenTimestamp, setThreadOpenTimestamp] = useState<number>(0)
+  const [searchResults, setSearchResults] = useState<Message[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const pendingScrollToMessageId = useRef<string | null>(null)
+  const [pendingThreadScroll, setPendingThreadScroll] = useState<string | null>(null)
 
   // Reset initial fetch flag when channel changes
   useEffect(() => {
     if (channelId !== lastChannelIdRef.current) {
-      console.log('Channel changed, resetting fetch state')
+      console.log('Channel changed from', lastChannelIdRef.current, 'to', channelId, {
+        pendingScrollId: pendingScrollToMessageId.current
+      })
       lastChannelIdRef.current = channelId
       initialFetchRef.current = false
-      shouldScrollRef.current = true
-      setIsLoading(false) // Reset loading state when channel changes
+      // Don't set shouldScrollRef if we have a pending scroll
+      if (!pendingScrollToMessageId.current) {
+        shouldScrollRef.current = true
+      }
+      setIsLoading(false)
+      inputRef.current?.focus()
     }
   }, [channelId])
 
@@ -170,9 +194,96 @@ export function MessageArea({
     return distanceFromBottom <= threshold
   }
 
+  const handleSearchResultClick = async (messageId: string) => {
+    console.log('MessageArea: Search result click received', {
+      messageId,
+      totalMessages: messages.length,
+      messageIds: messages.map(m => m.id)
+    })
+
+    // Disable any auto-scrolling
+    shouldScrollRef.current = false
+
+    try {
+      // Fetch the message to check if it's a thread message
+      const res = await fetch(`/api/messages/${messageId}`)
+      if (!res.ok) throw new Error('Failed to fetch message')
+      const message = await res.json()
+
+      if (message.parentMessageId) {
+        console.log('MessageArea: Message is a thread reply', {
+          messageId,
+          parentMessageId: message.parentMessageId
+        })
+        
+        // Set the message ID to scroll to in the thread
+        setPendingThreadScroll(messageId)
+        
+        // First scroll to and open the parent message's thread
+        pendingScrollToMessageId.current = message.parentMessageId
+        await handleOpenThread(message.parentMessageId)
+      } else {
+        // Regular message, just scroll to it
+        pendingScrollToMessageId.current = messageId
+      }
+    } catch (error) {
+      console.error('Error handling search result click:', error)
+      // Fallback to just trying to scroll to the message
+      pendingScrollToMessageId.current = messageId
+    }
+
+    // Notify parent component after setting up scroll state
+    if (onSearchResultClick) {
+      onSearchResultClick(messageId)
+    }
+  }
+
+  // Add effect to watch for messages updates and try scrolling
+  useEffect(() => {
+    if (!pendingScrollToMessageId.current || messages.length === 0) return
+
+    // Wait for React to finish updating
+    setTimeout(() => {
+      const messageElement = messageContainerRef.current?.querySelector(
+        `[data-message-id="${pendingScrollToMessageId.current}"]`
+      )
+      console.log('MessageArea: Scroll attempt:', {
+        pendingId: pendingScrollToMessageId.current,
+        elementFound: !!messageElement,
+        messageCount: messages.length,
+        hasMessageInArray: messages.some(m => m.id === pendingScrollToMessageId.current)
+      })
+
+      // Wait for message element to be available
+      const waitForElement = async () => {
+        let attempts = 0;
+        const maxAttempts = 50; // 5 seconds total (50 * 100ms)
+        
+        while (!messageElement && attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+        }
+
+        if (messageElement) {
+          messageElement.scrollIntoView({ block: 'center', behavior: 'instant' })
+          messageElement.classList.add('highlight-message')
+          setTimeout(() => {
+            messageElement.classList.remove('highlight-message')
+          }, 2000)
+          pendingScrollToMessageId.current = null
+          console.log('MessageArea: Successfully scrolled to message')
+        } else {
+          console.error('MessageArea: Failed to find message element after waiting')
+        }
+      }
+
+      waitForElement();
+    }, 100) // Timeout to ensure DOM is ready
+  }, [messages])
+
   useEffect(() => {
     async function fetchMessages() {
-      if (!channelId || status !== 'authenticated' || !globalThis.isPollingEnabled || activeThread) {
+      if (!channelId || status !== 'authenticated' || !globalThis.isPollingEnabled) {
         stopPolling()
         return
       }
@@ -183,7 +294,6 @@ export function MessageArea({
       setError(null)
       
       try {
-        console.log('Fetching messages for channel:', channelId, 'Initial fetch:', !initialFetchRef.current)
         const res = await fetch(`/api/channels/${channelId}/messages`)
         if (!res.ok) {
           if (res.status === 401) {
@@ -208,31 +318,37 @@ export function MessageArea({
         
         setMessages(mainMessages)
 
-        // Auto-scroll if conditions are met
-        if (shouldAutoScroll) {
-          requestAnimationFrame(() => {
-            if (messageContainerRef.current) {
-              messageContainerRef.current.scrollTo({
-                top: messageContainerRef.current.scrollHeight,
-                behavior: 'smooth'
-              })
-            }
-          })
-        }
-        // If this was the initial fetch and we should scroll
-        else if (!initialFetchRef.current && shouldScrollRef.current) {
-          console.log('Initial fetch complete, scrolling to bottom')
-          requestAnimationFrame(() => {
+        // Only auto-scroll if no pending scroll and should scroll
+        if (!pendingScrollToMessageId.current) {
+          if (shouldAutoScroll && shouldScrollRef.current) {
             if (messageContainerRef.current) {
               messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight
             }
-          })
-          shouldScrollRef.current = false
+          }
+          // Initial channel load scroll
+          else if (!initialFetchRef.current && shouldScrollRef.current) {
+            if (messageContainerRef.current) {
+              messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight
+            }
+            shouldScrollRef.current = false
+          }
         }
         
         // Mark initial fetch as complete and clear loading state
         initialFetchRef.current = true
         setIsLoading(false)
+
+        // If there's an active thread, also fetch its messages
+        if (activeThread) {
+          const threadRes = await fetch(`/api/messages/${activeThread.rootMessage.id}/thread`)
+          if (threadRes.ok) {
+            const threadData = await threadRes.json()
+            setThreadMessages(prev => ({
+              ...prev,
+              [activeThread.rootMessage.id]: threadData.messages || []
+            }))
+          }
+        }
       } catch (err) {
         console.error('Error fetching messages:', err)
         setError(err instanceof Error ? err.message : 'Failed to load messages')
@@ -243,7 +359,7 @@ export function MessageArea({
     stopPolling() // Clear any existing interval
     globalThis.isPollingEnabled = true // Reset the flag when channel changes
 
-    if (status === 'authenticated' && !activeThread) {
+    if (status === 'authenticated') {
       fetchMessages()
       // Set up polling interval
       pollingIntervalRef.current = setInterval(fetchMessages, 1000)
@@ -306,7 +422,15 @@ export function MessageArea({
   const handleAddReaction = async (messageId: string, emoji: { native: string }) => {
     if (status !== 'authenticated') return
     
+    console.log('MessageArea: Adding reaction', {
+      messageId,
+      emoji: emoji.native,
+      isThreadActive: !!activeThread,
+      threadRootMessageId: activeThread?.rootMessage.id
+    })
+    
     try {
+      console.log('MessageArea: Making API request to add reaction')
       const res = await fetch(`/api/messages/${messageId}/reactions`, {
         method: 'POST',
         headers: {
@@ -323,13 +447,48 @@ export function MessageArea({
       }
 
       const updatedMessage = await res.json()
+      console.log('MessageArea: Received updated message from API', updatedMessage)
+      
+      // Update main messages list
+      console.log('MessageArea: Updating main messages list')
       setMessages(prev => prev.map(msg => 
         msg.id === messageId 
           ? { ...msg, reactions: updatedMessage.reactions }
           : msg
       ))
+
+      // Update thread messages if this message is in a thread
+      if (activeThread) {
+        console.log('MessageArea: Thread is active, updating thread messages')
+        if (messageId === activeThread.rootMessage.id) {
+          console.log('MessageArea: Updating root message')
+          setActiveThread(prev => prev ? {
+            ...prev,
+            rootMessage: { ...prev.rootMessage, reactions: updatedMessage.reactions }
+          } : null)
+        }
+        
+        // Update thread messages
+        const threadId = activeThread.rootMessage.id
+        console.log('MessageArea: Updating thread messages for thread', threadId)
+        setThreadMessages(prev => {
+          const updatedThreadMessages = [...(prev[threadId] || [])]
+          const messageIndex = updatedThreadMessages.findIndex(msg => msg.id === messageId)
+          console.log('MessageArea: Found message at index', messageIndex)
+          if (messageIndex !== -1) {
+            updatedThreadMessages[messageIndex] = {
+              ...updatedThreadMessages[messageIndex],
+              reactions: updatedMessage.reactions
+            }
+          }
+          return {
+            ...prev,
+            [threadId]: updatedThreadMessages
+          }
+        })
+      }
     } catch (err) {
-      console.error('Error adding reaction:', err)
+      console.error('MessageArea: Error adding reaction:', err)
       setError(err instanceof Error ? err.message : 'Failed to add reaction')
     }
   }
@@ -350,11 +509,11 @@ export function MessageArea({
     }, {} as { [key: string]: { emoji: string; count: number; users: string[] } })
 
     return (
-      <div className="flex flex-wrap gap-1 mt-2 mb-2">
+      <div className="flex flex-wrap gap-1">
         {Object.entries(groupedReactions).map(([emoji, reaction]) => (
           <button
             key={emoji}
-            className={`flex items-center space-x-1 rounded px-2 py-0.5 text-sm ${
+            className={`flex items-center space-x-1 rounded px-2 py-0 text-sm ${
               hoveredMessageId === messageId ? 'bg-gray-200 hover:bg-gray-300' : 'bg-gray-100 hover:bg-gray-200'
             }`}
             onClick={() => handleAddReaction(messageId, { native: emoji })}
@@ -395,6 +554,11 @@ export function MessageArea({
 
   const handleOpenThread = async (messageId: string) => {
     console.log('Opening thread for message:', messageId)
+    console.log('Current message state:', messages.find(m => m.id === messageId))
+    
+    // Update timestamp to trigger focus even if same thread
+    setThreadOpenTimestamp(Date.now())
+    
     try {
       const res = await fetch(`/api/messages/${messageId}/thread`)
       if (!res.ok) {
@@ -404,14 +568,33 @@ export function MessageArea({
       console.log('Thread data received:', data)
       
       // Store thread messages in our thread messages state
-      setThreadMessages(prev => ({
-        ...prev,
-        [messageId]: data.messages || []
-      }))
+      console.log('Current thread messages:', threadMessages[messageId])
+      setThreadMessages(prev => {
+        console.log('Setting thread messages:', {
+          messageId,
+          currentMessages: prev[messageId],
+          newMessages: data.messages || []
+        })
+        return {
+          ...prev,
+          [messageId]: data.messages || []
+        }
+      })
       
-      // Set the active thread for display
+      const targetMessage = messages.find(m => m.id === messageId)
+      console.log('Target message found:', targetMessage)
+      if (!targetMessage) return
+
+      // Set the active thread for display without adding thread metadata if there are no replies
+      console.log('Setting active thread:', {
+        rootMessage: targetMessage,
+        messages: data.messages || [],
+        hasExistingThread: !!targetMessage.thread,
+        existingMessageCount: targetMessage.thread?.messageCount
+      })
+      
       setActiveThread({
-        rootMessage: messages.find(m => m.id === messageId) || data.rootMessage,
+        rootMessage: targetMessage,
         messages: data.messages || []
       })
     } catch (err) {
@@ -450,13 +633,13 @@ export function MessageArea({
         messages: updatedMessages
       } : null)
 
-      // Update the thread metadata in the main message list
+      // Update the thread metadata in the main message list only when there are replies
       setMessages(prev => prev.map(msg => 
         msg.id === activeThread.rootMessage.id
           ? {
               ...msg,
               thread: {
-                id: activeThread.rootMessage.thread?.id || msg.thread?.id || '',
+                id: activeThread.rootMessage.thread?.id || msg.thread?.id || activeThread.rootMessage.id,
                 messageCount: updatedMessages.length
               }
             }
@@ -469,6 +652,13 @@ export function MessageArea({
   }
 
   const handleCloseThread = () => {
+    if (activeThread) {
+      console.log('Closing thread:', {
+        messageId: activeThread.rootMessage.id,
+        currentMessageCount: threadMessages[activeThread.rootMessage.id]?.length,
+        hasThread: !!activeThread.rootMessage.thread
+      })
+    }
     setActiveThread(null)
   }
 
@@ -583,8 +773,42 @@ export function MessageArea({
     )
   }
 
+  // Search effect
+  useEffect(() => {
+    async function performSearch() {
+      if (!channelId || !searchQuery?.trim()) {
+        setSearchResults([])
+        return
+      }
+
+      setIsSearching(true)
+      try {
+        const res = await fetch(`/api/channels/${channelId}/search?query=${encodeURIComponent(searchQuery)}`)
+        if (res.ok) {
+          const data = await res.json()
+          setSearchResults(data)
+        }
+      } catch (error) {
+        console.error('Error searching messages:', error)
+      } finally {
+        setIsSearching(false)
+      }
+    }
+
+    performSearch()
+  }, [channelId, searchQuery])
+
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] w-full overflow-hidden">
+      <style jsx global>{`
+        @keyframes highlightFade {
+          0% { background-color: rgb(254 240 138); }
+          100% { background-color: transparent; }
+        }
+        .highlight-message {
+          animation: highlightFade 2s ease-out;
+        }
+      `}</style>
       <div className={`flex flex-1 min-h-0 ${activeThread ? 'divide-x' : ''}`}>
         <div 
           className={`
@@ -594,7 +818,21 @@ export function MessageArea({
           `} 
           ref={messageContainerRef}
         >
-          {channelId ? (
+          {searchQuery ? (
+            <div className="h-full">
+              {isSearching ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-gray-500">Searching messages...</div>
+                </div>
+              ) : (
+                <SearchResults
+                  results={searchResults}
+                  onResultClick={handleSearchResultClick}
+                  isFullScreen
+                />
+              )}
+            </div>
+          ) : channelId ? (
             <>
               <div className="px-4 pt-24 pb-12 text-center">
                 <h2 className="text-xl font-bold mb-1">{channelType === 'channel' ? '# ' : ''}{channelName}</h2>
@@ -632,9 +870,10 @@ export function MessageArea({
                         key={message.id} 
                         className={`group relative flex w-full px-4 ${
                           hoveredMessageId === message.id ? 'bg-gray-100' : ''
-                        } ${index > 0 ? 'mt-6' : ''}`}
+                        } ${index > 0 ? 'mt-3' : ''}`}
                         onMouseEnter={() => setHoveredMessageId(message.id)}
                         onMouseLeave={() => setHoveredMessageId(null)}
+                        data-message-id={message.id}
                       >
                         <div className="flex">
                           <Popover>
@@ -664,20 +903,20 @@ export function MessageArea({
                             {message.attachments?.map(attachment => renderAttachment(attachment))}
                           </div>
                           {message.reactions.length > 0 && (
-                            <div className="mt-1">
+                            <div className="pb-1">
                               {renderReactions(message.id, message.reactions)}
                             </div>
                           )}
-                          {message.thread && (
+                          {((message.thread && message.thread.messageCount > 0) || activeThread?.rootMessage.id === message.id) && (
                             <button
                               onClick={() => handleOpenThread(message.id)}
-                              className="mt-2 text-sm text-gray-500 hover:text-gray-700 flex items-center space-x-1"
+                              className="text-sm text-gray-500 hover:text-gray-700 flex items-center space-x-1 pb-1"
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>
                                 {activeThread?.rootMessage.id === message.id 
                                   ? `${threadMessages[message.id]?.length || 0} ${threadMessages[message.id]?.length === 1 ? 'reply' : 'replies'}`
-                                  : `${message.thread.messageCount || 0} ${message.thread.messageCount === 1 ? 'reply' : 'replies'}`
+                                  : `${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`
                                 }
                               </span>
                             </button>
@@ -729,9 +968,10 @@ export function MessageArea({
                         }`}
                         onMouseEnter={() => setHoveredMessageId(message.id)}
                         onMouseLeave={() => setHoveredMessageId(null)}
+                        data-message-id={message.id}
                       >
                         <div className="flex">
-                          <div className="w-10 h-10 flex-shrink-0 mr-3 mt-[3px] invisible">
+                          <div className="w-10 h-[1px] flex-shrink-0 mr-3 mt-[3px] invisible">
                             <UserAvatar 
                               src={message.user.image || undefined}
                               alt={message.user.name || 'Unknown User'} 
@@ -745,20 +985,20 @@ export function MessageArea({
                             {message.attachments?.map(attachment => renderAttachment(attachment))}
                           </div>
                           {message.reactions.length > 0 && (
-                            <div className="mt-1">
+                            <div className="pb-1">
                               {renderReactions(message.id, message.reactions)}
                             </div>
                           )}
-                          {message.thread && (
+                          {((message.thread && message.thread.messageCount > 0) || activeThread?.rootMessage.id === message.id) && (
                             <button
                               onClick={() => handleOpenThread(message.id)}
-                              className="mt-2 text-sm text-gray-500 hover:text-gray-700 flex items-center space-x-1"
+                              className="text-sm text-gray-500 hover:text-gray-700 flex items-center space-x-1 pb-1"
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>
                                 {activeThread?.rootMessage.id === message.id 
                                   ? `${threadMessages[message.id]?.length || 0} ${threadMessages[message.id]?.length === 1 ? 'reply' : 'replies'}`
-                                  : `${message.thread.messageCount || 0} ${message.thread.messageCount === 1 ? 'reply' : 'replies'}`
+                                  : `${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`
                                 }
                               </span>
                             </button>
@@ -822,6 +1062,10 @@ export function MessageArea({
               messages={threadMessages[activeThread.rootMessage.id] || []}
               onClose={handleCloseThread}
               onSendMessage={handleSendThreadMessage}
+              onAddReaction={handleAddReaction}
+              openTimestamp={threadOpenTimestamp}
+              pendingScrollToMessageId={pendingThreadScroll}
+              onScrollComplete={() => setPendingThreadScroll(null)}
             />
           </div>
         )}

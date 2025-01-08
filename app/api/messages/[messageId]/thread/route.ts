@@ -16,6 +16,7 @@ export async function GET(
   const session = await getServerSession(authOptions)
 
   if (!session?.user?.id) {
+    console.log('Thread API: No session found')
     return new NextResponse(
       JSON.stringify({ error: 'You must be logged in' }),
       { status: 401 }
@@ -23,6 +24,7 @@ export async function GET(
   }
 
   try {
+    console.log('Thread API: Fetching message with ID:', params.messageId)
     // First, get the message and verify user access
     const message = await prisma.message.findFirst({
       where: {
@@ -56,12 +58,18 @@ export async function GET(
           },
         },
         thread: true,
+        channel: true,
       },
     })
 
-    console.log('Found message:', message)
+    console.log('Thread API: Found message:', {
+      messageId: message?.id,
+      hasThread: !!message?.thread,
+      channelId: message?.channelId
+    })
 
     if (!message) {
+      console.log('Thread API: Message not found or access denied')
       return new NextResponse(
         JSON.stringify({ error: 'Message not found or access denied' }),
         { status: 404 }
@@ -69,6 +77,7 @@ export async function GET(
     }
 
     // Get thread replies and count separately
+    console.log('Thread API: Fetching thread replies')
     const [threadReplies, replyCount] = await Promise.all([
       prisma.message.findMany({
         where: {
@@ -104,28 +113,40 @@ export async function GET(
       }),
     ])
 
-    // If no thread exists yet, create one
+    console.log('Thread API: Found replies:', {
+      replyCount,
+      threadRepliesCount: threadReplies.length
+    })
+
+    // Create thread if it doesn't exist
     let threadId = message.threadId
     if (!threadId) {
-      console.log('Creating new thread')
-      const thread = await prisma.thread.create({
-        data: {
-          rootMessage: {
-            connect: { id: message.id },
+      console.log('Thread API: Creating new thread')
+      try {
+        const thread = await prisma.thread.create({
+          data: {
+            rootMessage: {
+              connect: { id: message.id },
+            },
           },
-        },
-      })
-      threadId = thread.id
-      console.log('Created thread:', thread)
+        })
+        threadId = thread.id
+        console.log('Thread API: Created thread:', thread)
 
-      // Update the message with the new thread ID
-      await prisma.message.update({
-        where: { id: message.id },
-        data: { threadId: thread.id },
-      })
+        // Update the message with the new thread ID
+        await prisma.message.update({
+          where: { id: message.id },
+          data: { threadId: thread.id },
+        })
+      } catch (error) {
+        console.error('Thread API: Error creating thread:', error)
+        // If thread creation fails, we can still return the message and replies
+        // Just use the message ID as a temporary thread ID
+        threadId = message.id
+      }
     }
 
-    return new NextResponse(JSON.stringify({
+    const response = {
       rootMessage: {
         id: message.id,
         content: message.content,
@@ -138,11 +159,22 @@ export async function GET(
         }
       },
       messages: threadReplies,
-    }))
+    }
+
+    console.log('Thread API: Sending response:', {
+      rootMessageId: response.rootMessage.id,
+      threadId: response.rootMessage.thread.id,
+      messageCount: response.messages.length
+    })
+
+    return new NextResponse(JSON.stringify(response))
   } catch (error) {
-    console.error('Error fetching thread:', error)
+    console.error('Thread API Error:', error)
     return new NextResponse(
-      JSON.stringify({ error: 'Failed to fetch thread' }),
+      JSON.stringify({ 
+        error: 'Failed to fetch thread',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }),
       { status: 500 }
     )
   }
@@ -152,78 +184,68 @@ export async function POST(
   request: Request,
   { params }: { params: { messageId: string } }
 ) {
-  console.log('Creating thread message for:', params.messageId)
-  const session = await getServerSession(authOptions)
-
-  if (!session?.user?.id) {
-    return new NextResponse(
-      JSON.stringify({ error: 'You must be logged in' }),
-      { status: 401 }
-    )
-  }
-
   try {
+    console.log('Creating thread message for:', params.messageId)
+    const session = await getServerSession(authOptions)
+
+    if (!session?.user?.id) {
+      return new NextResponse(
+        JSON.stringify({ error: 'You must be logged in' }),
+        { 
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
     const json = await request.json()
     const body = createThreadMessageSchema.parse(json)
 
-    // Get the root message
-    const rootMessage = await prisma.message.findFirst({
+    // Get the root message and its channel
+    const rootMessage = await prisma.message.findUnique({
       where: {
         id: params.messageId,
-        channel: {
-          workspace: {
-            members: {
-              some: {
-                userId: session.user.id,
-              },
-            },
-          },
-        },
       },
       include: {
-        thread: true,
+        channel: true,
       },
     })
 
     if (!rootMessage) {
       return new NextResponse(
-        JSON.stringify({ error: 'Message not found or access denied' }),
-        { status: 404 }
+        JSON.stringify({ error: 'Message not found' }),
+        { 
+          status: 404,
+          headers: { 'Content-Type': 'application/json' }
+        }
       )
     }
 
-    // Create the thread if it doesn't exist
-    let threadId = rootMessage.threadId
-    if (!threadId) {
-      const thread = await prisma.thread.create({
-        data: {
-          rootMessage: {
-            connect: { id: rootMessage.id },
-          },
-        },
-      })
-      threadId = thread.id
+    // Verify user has access to the channel
+    const hasAccess = await prisma.workspaceMember.findFirst({
+      where: {
+        userId: session.user.id,
+        workspaceId: rootMessage.channel.workspaceId,
+      },
+    })
 
-      // Update the root message with the thread ID
-      await prisma.message.update({
-        where: { id: rootMessage.id },
-        data: { threadId: thread.id },
-      })
+    if (!hasAccess) {
+      return new NextResponse(
+        JSON.stringify({ error: 'Access denied' }),
+        { 
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      )
     }
 
     // Create the thread message
     const threadMessage = await prisma.message.create({
       data: {
         content: body.content,
-        user: {
-          connect: { id: session.user.id },
-        },
-        channel: {
-          connect: { id: rootMessage.channelId },
-        },
-        parentMessage: {
-          connect: { id: rootMessage.id },
-        },
+        userId: session.user.id,
+        channelId: rootMessage.channelId,
+        parentMessageId: rootMessage.id
       },
       include: {
         user: {
@@ -233,32 +255,43 @@ export async function POST(
             image: true,
           },
         },
-        reactions: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-          },
-        },
+        reactions: true,
       },
     })
 
-    console.log('Thread message created:', threadMessage.id)
-    return new NextResponse(JSON.stringify(threadMessage))
+    return new NextResponse(
+      JSON.stringify(threadMessage),
+      { 
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    )
   } catch (error) {
-    console.error('Error creating thread message:', error)
+    console.error('Thread message creation error:', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+      messageId: params.messageId
+    })
+
     if (error instanceof z.ZodError) {
       return new NextResponse(
-        JSON.stringify({ error: error.errors }),
-        { status: 400 }
+        JSON.stringify({ error: 'Invalid message format', details: error.errors }),
+        { 
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        }
       )
     }
+
     return new NextResponse(
-      JSON.stringify({ error: 'Failed to create thread message' }),
-      { status: 500 }
+      JSON.stringify({ 
+        error: 'Failed to create thread message',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }),
+      { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      }
     )
   }
 } 
