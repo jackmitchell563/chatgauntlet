@@ -26,7 +26,8 @@ export default function LoginForm() {
             alert(data.error || 'Login failed');
           }
         } catch (error) {
-          alert('An error occurred during login');
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+          alert(`An error occurred during login: ${errorMessage}`);
         }
       }}
     >
