@@ -288,11 +288,6 @@ export function MessageArea({
         return
       }
       
-      if (!initialFetchRef.current && messages.length === 0) {
-        setIsLoading(true)
-      }
-      setError(null)
-      
       try {
         const res = await fetch(`/api/channels/${channelId}/messages`)
         if (!res.ok) {
@@ -305,35 +300,67 @@ export function MessageArea({
         }
         const data = await res.json()
         
-        // Filter out messages that are part of a thread (have a parentMessageId)
+        // Filter out messages that are part of a thread
         const mainMessages = data.filter((msg: Message) => !msg.parentMessageId)
+        const previousMessageCount = messages.length
         
         // Check if we should auto-scroll
         const wasNearBottom = isNearBottom()
-        const hasNewMessages = mainMessages.length > messages.length
+        const hasNewMessages = mainMessages.length > previousMessageCount
         const lastMessage = hasNewMessages ? mainMessages[mainMessages.length - 1] : null
         const isNewMessageFromOtherUser = lastMessage && lastMessage.user.id !== session?.user?.id
         const shouldAutoScroll = (wasNearBottom && hasNewMessages && isNewMessageFromOtherUser) || 
                                (hasNewMessages && lastMessage?.user.id === session?.user?.id)
         
-        setMessages(mainMessages)
-
-        // Only auto-scroll if no pending scroll and should scroll
-        if (!pendingScrollToMessageId.current) {
-          if (shouldAutoScroll && shouldScrollRef.current) {
-            if (messageContainerRef.current) {
-              messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight
-            }
-          }
-          // Initial channel load scroll
-          else if (!initialFetchRef.current && shouldScrollRef.current) {
-            if (messageContainerRef.current) {
-              messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight
-            }
-            shouldScrollRef.current = false
-          }
+        // Only log if there's a new message from another user
+        if (hasNewMessages && isNewMessageFromOtherUser) {
+          console.log('New message from other user detected:', {
+            wasNearBottom,
+            shouldAutoScroll,
+            messageContainer: messageContainerRef.current ? {
+              scrollHeight: messageContainerRef.current.scrollHeight,
+              scrollTop: messageContainerRef.current.scrollTop,
+              clientHeight: messageContainerRef.current.clientHeight,
+              distanceFromBottom: messageContainerRef.current.scrollHeight - 
+                (messageContainerRef.current.scrollTop + messageContainerRef.current.clientHeight)
+            } : 'no container ref'
+          })
         }
         
+        setMessages(mainMessages)
+
+        // Only auto-scroll if no pending scroll
+        if (!pendingScrollToMessageId.current) {
+          if (shouldAutoScroll) {
+            if (messageContainerRef.current && hasNewMessages && isNewMessageFromOtherUser) {
+              const container = messageContainerRef.current
+              const targetScrollTop = container.scrollHeight - container.clientHeight
+              
+              console.log('Attempting to scroll to new message:', {
+                currentScrollTop: container.scrollTop,
+                targetScrollTop
+              })
+              
+              // Use smooth scrolling
+              container.scrollTo({
+                top: targetScrollTop,
+                behavior: 'smooth'
+              })
+
+              // Check if we need to adjust scroll after animation
+              setTimeout(() => {
+                if (container.scrollTop < targetScrollTop) {
+                  console.log('Scroll adjustment needed for new message')
+                  container.scrollTo({
+                    top: container.scrollHeight - container.clientHeight,
+                    behavior: 'smooth'
+                  })
+                }
+              }, 300)
+            }
+          }
+        }
+
         // Mark initial fetch as complete and clear loading state
         initialFetchRef.current = true
         setIsLoading(false)
@@ -403,14 +430,35 @@ export function MessageArea({
         setNewMessage('')
         setStagedAttachments([]) // Clear staged attachments after sending
         
-        // Smooth scroll to bottom after sending a message
-        requestAnimationFrame(() => {
+        // Enhanced scroll behavior with multiple attempts
+        const scrollToBottom = () => {
           if (messageContainerRef.current) {
-            messageContainerRef.current.scrollTo({
-              top: messageContainerRef.current.scrollHeight,
+            const container = messageContainerRef.current
+            const targetScrollTop = container.scrollHeight - container.clientHeight
+            
+            // Smooth scroll to bottom
+            container.scrollTo({
+              top: targetScrollTop,
               behavior: 'smooth'
             })
+
+            // Check if we need to adjust scroll after animation
+            setTimeout(() => {
+              if (container.scrollTop < targetScrollTop) {
+                // If we haven't reached the bottom, try one more time
+                container.scrollTo({
+                  top: container.scrollHeight - container.clientHeight,
+                  behavior: 'smooth'
+                })
+              }
+            }, 300) // Wait for initial scroll animation
           }
+        }
+
+        // Wait for next frame to ensure DOM is updated
+        requestAnimationFrame(() => {
+          // Wait a bit for any images/content to load
+          setTimeout(scrollToBottom, 100)
         })
       } catch (err) {
         console.error('Error sending message:', err)
