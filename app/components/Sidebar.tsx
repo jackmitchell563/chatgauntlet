@@ -21,7 +21,7 @@ import { useDebounce } from '@/app/hooks/useDebounce'
 interface Channel {
   id: string
   name: string
-  type: string
+  type: 'channel' | 'dm'
 }
 
 interface DirectMessage {
@@ -66,6 +66,7 @@ interface SidebarProps {
   onResize: (width: number) => void
   onSearchResultClick: (messageId: string) => void
   onShowFullSearch: (query: string) => void
+  backgroundColor?: string
 }
 
 export function Sidebar({ 
@@ -78,7 +79,8 @@ export function Sidebar({
   width,
   onResize,
   onSearchResultClick,
-  onShowFullSearch
+  onShowFullSearch,
+  backgroundColor
 }: SidebarProps) {
   const { data: session } = useSession()
   const { userStatuses, updateUserStatus } = useWorkspace()
@@ -232,7 +234,7 @@ export function Sidebar({
     <div 
       ref={sidebarRef}
       className="bg-gray-800 text-white p-4 flex flex-col relative flex-shrink-0 h-full"
-      style={{ width: `${width}px` }}
+      style={{ width: `${width}px`, backgroundColor: backgroundColor }}
     >
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getServerSession } from 'next-auth'
-import { authOptions } from '@/app/api/auth/[...nextauth]/route'
+import { authOptions } from '../../api/auth/[...nextauth]/options'
 import { prisma } from '@/app/lib/prisma'
 import { WorkspaceProvider } from './workspace-provider'
 
@@ -17,7 +17,16 @@ async function getWorkspaceData(workspaceId: string, userId: string) {
     include: {
       members: {
         where: { userId },
-        select: { role: true }
+        select: {
+          role: true,
+          user: {
+            select: {
+              id: true,
+              name: true,
+              image: true
+            }
+          }
+        }
       },
       channels: {
         where: {

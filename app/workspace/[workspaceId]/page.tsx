@@ -247,7 +247,7 @@ export default function WorkspacePage() {
     .map(channel => ({
       id: channel.id,
       name: channel.name,
-      type: channel.type === 'DM' ? 'dm' : 'channel'
+      type: 'channel' as const
     }))
 
   // Helper function to get DM user's name
