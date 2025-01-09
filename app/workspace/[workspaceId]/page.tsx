@@ -89,6 +89,9 @@ export default function WorkspacePage() {
   }
 
   const handleChannelSelect = async (channel: { id: string; name: string }) => {
+    // Clear search state first
+    setSearchQuery('')
+    
     // Validate that the channel exists before selecting
     const targetChannel = workspace.channels.find(c => c.id === channel.id)
     if (targetChannel) {
@@ -100,6 +103,9 @@ export default function WorkspacePage() {
   }
 
   const handleDirectMessageSelect = async (dm: { id: string; name: string }) => {
+    // Clear search state first
+    setSearchQuery('')
+    
     try {
       const res = await fetch(`/api/workspaces/${workspace.id}/dm`, {
         method: 'POST',

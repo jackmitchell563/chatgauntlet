@@ -11,6 +11,7 @@ import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import Image from 'next/image'
 import Picker from '@emoji-mart/react'
 import data from '@emoji-mart/data'
+import { MessageSquare } from 'lucide-react'
 
 interface ThreadMessage {
   id: string
@@ -42,6 +43,48 @@ interface ThreadViewProps {
   onScrollComplete?: () => void
 }
 
+interface UserProfileProps {
+  user: {
+    id: string
+    name: string | null
+    image: string | null
+  }
+}
+
+function UserProfile({ user }: UserProfileProps) {
+  const { userStatuses } = useWorkspace()
+  const status = userStatuses[user.id] || 'Active'
+  
+  return (
+    <div className="p-4 w-72">
+      <div className="flex items-center space-x-4">
+        <UserAvatar 
+          src={user.image || undefined}
+          alt={user.name || 'Unknown User'} 
+          size={64}
+        />
+        <div className="flex-1 min-w-0">
+          <h3 className="text-lg font-semibold truncate">
+            {user.name || 'Unknown User'}
+          </h3>
+          <div className="flex items-center text-sm text-gray-500">
+            <div className={`w-2 h-2 rounded-full mr-2 ${status === 'Away' ? 'bg-gray-400' : 'bg-green-500'}`}></div>
+            {status}
+          </div>
+        </div>
+      </div>
+      <div className="mt-4 pt-4 border-t">
+        <div className="text-sm text-gray-600">
+          <div className="flex items-center mb-2">
+            <MessageSquare className="w-4 h-4 mr-2" />
+            Message
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ThreadView({ 
   rootMessage, 
   messages, 
@@ -59,6 +102,32 @@ export function ThreadView({
   const { userStatuses } = useWorkspace()
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
   const [openEmojiPickerId, setOpenEmojiPickerId] = useState<string | null>(null)
+
+  // Add formatMessageDate function
+  const formatMessageDate = (date: Date) => {
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+
+    // Reset hours to compare just the dates
+    const messageDate = new Date(date)
+    messageDate.setHours(0, 0, 0, 0)
+    today.setHours(0, 0, 0, 0)
+    yesterday.setHours(0, 0, 0, 0)
+
+    if (messageDate.getTime() === today.getTime()) {
+      return 'TODAY'
+    } else if (messageDate.getTime() === yesterday.getTime()) {
+      return 'YESTERDAY'
+    } else {
+      return messageDate.toLocaleDateString('en-US', { 
+        weekday: 'long',
+        month: 'long', 
+        day: 'numeric',
+        year: 'numeric'
+      })
+    }
+  }
 
   // Debug logging
   useEffect(() => {
@@ -192,19 +261,30 @@ export function ThreadView({
       <div className="flex-1 overflow-y-auto" ref={messageContainerRef}>
         <div className="p-4 space-y-4">
           {/* Root message */}
-          <div className="group relative flex space-x-3"
+          <div className="group relative flex w-full hover:bg-gray-100 px-2 rounded-md"
                onMouseEnter={() => setHoveredMessageId(rootMessage.id)}
                onMouseLeave={() => setHoveredMessageId(null)}>
-            <UserAvatar 
-              src={rootMessage.user.image || undefined}
-              alt={rootMessage.user.name || 'Unknown User'} 
-              size={40}
-            />
-            <div className="flex-1">
+            <div className="flex">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <div className="w-10 h-10 flex-shrink-0 mr-3 mt-[3px] cursor-pointer">
+                    <UserAvatar 
+                      src={rootMessage.user.image || undefined}
+                      alt={rootMessage.user.name || 'Unknown User'} 
+                      size={40}
+                    />
+                  </div>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="p-0">
+                  <UserProfile user={rootMessage.user} />
+                </PopoverContent>
+              </Popover>
+            </div>
+            <div className="flex-grow min-w-0 max-w-full">
               <div className="flex items-center h-6">
                 <div className="font-semibold truncate leading-6">{rootMessage.user.name || 'Unknown User'}</div>
                 <div className="text-xs text-gray-500 ml-2 flex-shrink-0 leading-6">
-                  {formatTime(rootMessage.createdAt)}
+                  {new Date(rootMessage.createdAt).toLocaleTimeString()}
                 </div>
               </div>
               <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px]">
@@ -254,28 +334,55 @@ export function ThreadView({
             {messages.map((message, index) => {
               const prevMessage = messages[index - 1];
               const isConsecutive = prevMessage && prevMessage.user.id === message.user.id;
+              const currentDate = new Date(message.createdAt);
+              const prevDate = prevMessage ? new Date(prevMessage.createdAt) : null;
+              const isNewDay = !prevDate || 
+                currentDate.getDate() !== prevDate.getDate() || 
+                currentDate.getMonth() !== prevDate.getMonth() || 
+                currentDate.getFullYear() !== prevDate.getFullYear();
+
+              // Add date separator if it's a new day
+              const elements = [];
+              if (isNewDay) {
+                elements.push(
+                  <div key={`date-${message.createdAt}`} className="flex items-center my-6 px-4">
+                    <div className="flex-grow h-px bg-gray-300"></div>
+                    <div className="mx-4 text-sm text-gray-500 font-medium">
+                      {formatMessageDate(currentDate)}
+                    </div>
+                    <div className="flex-grow h-px bg-gray-300"></div>
+                  </div>
+                );
+              }
               
               if (!isConsecutive) {
-                return (
+                elements.push(
                   <div key={message.id} 
-                       className={`group relative flex w-full ${index > 0 ? 'mt-3' : ''}`}
+                       className={`group relative flex w-full hover:bg-gray-100 px-2 rounded-md ${index > 0 ? 'mt-3' : ''}`}
                        onMouseEnter={() => setHoveredMessageId(message.id)}
                        onMouseLeave={() => setHoveredMessageId(null)}
                        data-message-id={message.id}>
                     <div className="flex">
-                      <div className="w-10 h-10 flex-shrink-0 mr-3 mt-[3px]">
-                        <UserAvatar 
-                          src={message.user.image || undefined}
-                          alt={message.user.name || 'Unknown User'} 
-                          size={40}
-                        />
-                      </div>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <div className="w-10 h-10 flex-shrink-0 mr-3 mt-[3px] cursor-pointer">
+                            <UserAvatar 
+                              src={message.user.image || undefined}
+                              alt={message.user.name || 'Unknown User'} 
+                              size={40}
+                            />
+                          </div>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" className="p-0">
+                          <UserProfile user={message.user} />
+                        </PopoverContent>
+                      </Popover>
                     </div>
-                    <div className="flex-1">
+                    <div className="flex-grow min-w-0 max-w-full">
                       <div className="flex items-center h-6">
                         <div className="font-semibold truncate leading-6">{message.user.name || 'Unknown User'}</div>
                         <div className="text-xs text-gray-500 ml-2 flex-shrink-0 leading-6">
-                          {formatTime(message.createdAt)}
+                          {new Date(message.createdAt).toLocaleTimeString()}
                         </div>
                       </div>
                       <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px]">
@@ -317,22 +424,26 @@ export function ThreadView({
                   </div>
                 );
               } else {
-                return (
+                elements.push(
                   <div key={message.id} 
-                       className="group relative flex w-full"
+                       className="group relative flex w-full hover:bg-gray-100 px-2 rounded-md"
                        onMouseEnter={() => setHoveredMessageId(message.id)}
                        onMouseLeave={() => setHoveredMessageId(null)}
                        data-message-id={message.id}>
                     <div className="flex">
-                      <div className="w-10 h-[1px] flex-shrink-0 mr-3 mt-[3px] invisible">
-                        <UserAvatar 
-                          src={message.user.image || undefined}
-                          alt={message.user.name || 'Unknown User'} 
-                          size={40}
-                        />
+                      <div className="w-10 flex-shrink-0 mr-3 relative">
+                        {hoveredMessageId === message.id && (
+                          <div className="absolute -left-[10px] right-0 top-[9px] text-[10px] text-gray-500 leading-none text-right">
+                            {new Date(message.createdAt).toLocaleTimeString([], { 
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              hour12: true
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <div className="flex-1">
+                    <div className="flex-grow min-w-0 max-w-full">
                       <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[10px] py-[2px]">
                         {message.content}
                       </div>
@@ -372,6 +483,7 @@ export function ThreadView({
                   </div>
                 );
               }
+              return elements;
             })}
           </div>
         </div>

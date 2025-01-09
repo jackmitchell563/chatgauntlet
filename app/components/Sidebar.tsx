@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { PlusCircle, Hash, User, ChevronDown, ChevronRight, Settings, Building } from 'lucide-react'
+import { PlusCircle, Hash, User, ChevronDown, ChevronRight, Settings, Building, Search } from 'lucide-react'
 import { UserAvatar } from './UserAvatar'
 import {
   DropdownMenu,
@@ -264,10 +264,11 @@ export function Sidebar({
         </DropdownMenuContent>
       </DropdownMenu>
       <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
         <Input 
           type="text" 
-          placeholder="Search messages" 
-          className="w-full bg-gray-700"
+          placeholder="Search" 
+          className="w-full bg-gray-700 pl-9"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onKeyDown={handleSearchKeyDown}

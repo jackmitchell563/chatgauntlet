@@ -660,6 +660,8 @@ export function MessageArea({
       })
     }
     setActiveThread(null)
+    // Focus the main input when closing thread
+    inputRef.current?.focus()
   }
 
   // Add a handler for emoji picker open state
@@ -798,6 +800,14 @@ export function MessageArea({
     performSearch()
   }, [channelId, searchQuery])
 
+  // Add effect to close thread when search starts
+  useEffect(() => {
+    if (searchQuery) {
+      // Close any open thread when search starts
+      setActiveThread(null)
+    }
+  }, [searchQuery])
+
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] w-full overflow-hidden">
       <style jsx global>{`
@@ -837,7 +847,7 @@ export function MessageArea({
               <div className="px-4 pt-24 pb-12 text-center">
                 <h2 className="text-xl font-bold mb-1">{channelType === 'channel' ? '# ' : ''}{channelName}</h2>
                 <p className="text-gray-500">
-                  This is the beginning of {channelType === 'channel' ? `#${channelName}` : `your conversation with ${channelName}`}
+                  This is the beginning of {channelType === 'channel' ? `# ${channelName}` : `your conversation with ${channelName}`}
                 </p>
               </div>
               <div className="pb-6">
@@ -868,9 +878,9 @@ export function MessageArea({
                     acc.push(
                       <div 
                         key={message.id} 
-                        className={`group relative flex w-full px-4 ${
-                          hoveredMessageId === message.id ? 'bg-gray-100' : ''
-                        } ${index > 0 ? 'mt-3' : ''}`}
+                        className={`group relative flex w-full px-4 hover:bg-gray-100 ${
+                          index > 0 ? 'mt-3' : ''
+                        }`}
                         onMouseEnter={() => setHoveredMessageId(message.id)}
                         onMouseLeave={() => setHoveredMessageId(null)}
                         data-message-id={message.id}
@@ -963,20 +973,22 @@ export function MessageArea({
                     acc.push(
                       <div 
                         key={message.id} 
-                        className={`group relative flex w-full px-4 ${
-                          hoveredMessageId === message.id ? 'bg-gray-100' : ''
-                        }`}
+                        className="group relative flex w-full px-4 hover:bg-gray-100"
                         onMouseEnter={() => setHoveredMessageId(message.id)}
                         onMouseLeave={() => setHoveredMessageId(null)}
                         data-message-id={message.id}
                       >
                         <div className="flex">
-                          <div className="w-10 h-[1px] flex-shrink-0 mr-3 mt-[3px] invisible">
-                            <UserAvatar 
-                              src={message.user.image || undefined}
-                              alt={message.user.name || 'Unknown User'} 
-                              size={40} 
-                            />
+                          <div className="w-10 flex-shrink-0 mr-3 relative">
+                            {hoveredMessageId === message.id && (
+                              <div className="absolute -left-[10px] right-0 top-[9px] text-[10px] text-gray-500 leading-none text-right">
+                                {new Date(message.createdAt).toLocaleTimeString([], { 
+                                  hour: 'numeric',
+                                  minute: '2-digit',
+                                  hour12: true
+                                })}
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex-grow min-w-0 max-w-full">
@@ -1055,7 +1067,7 @@ export function MessageArea({
         </div>
 
         {/* Thread View */}
-        {activeThread && (
+        {activeThread && !searchQuery && (
           <div className="w-5/12 h-full flex flex-col overflow-hidden">
             <ThreadView
               rootMessage={activeThread.rootMessage}
@@ -1071,69 +1083,72 @@ export function MessageArea({
         )}
       </div>
 
-      <div className="p-4 border-t mt-auto">
-        {/* Show staged attachments */}
-        {stagedAttachments.length > 0 && (
-          <div className="mb-2 space-y-2">
-            {stagedAttachments.map((attachment, index) => (
-              <div key={index} className="flex items-center space-x-2 bg-gray-50 p-2 rounded-md">
-                <Paperclip className="w-4 h-4 text-gray-500" />
-                <span className="flex-1 truncate text-sm">{attachment.name}</span>
-                <button
-                  onClick={() => removeStagedAttachment(index)}
-                  className="text-gray-500 hover:text-red-500"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+      {/* Message input area - hide completely during search */}
+      {!searchQuery && (
+        <div className="p-4 border-t mt-auto">
+          {/* Show staged attachments */}
+          {stagedAttachments.length > 0 && (
+            <div className="mb-2 space-y-2">
+              {stagedAttachments.map((attachment, index) => (
+                <div key={index} className="flex items-center space-x-2 bg-gray-50 p-2 rounded-md">
+                  <Paperclip className="w-4 h-4 text-gray-500" />
+                  <span className="flex-1 truncate text-sm">{attachment.name}</span>
+                  <button
+                    onClick={() => removeStagedAttachment(index)}
+                    className="text-gray-500 hover:text-red-500"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          
+          <div className="flex items-center space-x-2">
+            <Input
+              type="text"
+              placeholder={stagedAttachments.length > 0 ? "Add a message or send files..." : "Type a message..."}
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+              disabled={!channelId}
+              ref={inputRef}
+            />
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              className="hidden"
+              multiple
+            />
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              disabled={!channelId}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip className="h-5 w-5" />
+            </Button>
+            <Button 
+              onClick={handleSendMessage} 
+              disabled={!channelId || (newMessage.trim() === '' && stagedAttachments.length === 0)}
+            >
+              <Send className="h-5 w-5" />
+            </Button>
           </div>
-        )}
-        
-        <div className="flex items-center space-x-2">
-          <Input
-            type="text"
-            placeholder={stagedAttachments.length > 0 ? "Add a message or send files..." : "Type a message..."}
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-            disabled={!channelId}
-            ref={inputRef}
-          />
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileSelect}
-            className="hidden"
-            multiple
-          />
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            disabled={!channelId}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Paperclip className="h-5 w-5" />
-          </Button>
-          <Button 
-            onClick={handleSendMessage} 
-            disabled={!channelId || (newMessage.trim() === '' && stagedAttachments.length === 0)}
-          >
-            <Send className="h-5 w-5" />
-          </Button>
+          {/* Upload progress indicators */}
+          {Object.entries(uploadingFiles).length > 0 && (
+            <div className="mt-2 space-y-2">
+              {Object.entries(uploadingFiles).map(([id, { name }]) => (
+                <div key={id} className="flex items-center space-x-2">
+                  <div className="w-4 h-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
+                  <span className="text-sm text-gray-600">{name}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        {/* Upload progress indicators */}
-        {Object.entries(uploadingFiles).length > 0 && (
-          <div className="mt-2 space-y-2">
-            {Object.entries(uploadingFiles).map(([id, { name }]) => (
-              <div key={id} className="flex items-center space-x-2">
-                <div className="w-4 h-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
-                <span className="text-sm text-gray-600">{name}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
 }
