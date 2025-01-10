@@ -12,11 +12,9 @@ export async function GET(
   request: Request,
   { params }: { params: { messageId: string } }
 ) {
-  console.log('Thread API called for message:', params.messageId)
   const session = await getServerSession(authOptions)
 
   if (!session?.user?.id) {
-    console.log('Thread API: No session found')
     return new NextResponse(
       JSON.stringify({ error: 'You must be logged in' }),
       { status: 401 }
@@ -24,7 +22,6 @@ export async function GET(
   }
 
   try {
-    console.log('Thread API: Fetching message with ID:', params.messageId)
     // First, get the message and verify user access
     const message = await prisma.message.findFirst({
       where: {
@@ -62,14 +59,8 @@ export async function GET(
       },
     })
 
-    console.log('Thread API: Found message:', {
-      messageId: message?.id,
-      hasThread: !!message?.thread,
-      channelId: message?.channelId
-    })
 
     if (!message) {
-      console.log('Thread API: Message not found or access denied')
       return new NextResponse(
         JSON.stringify({ error: 'Message not found or access denied' }),
         { status: 404 }
@@ -77,7 +68,6 @@ export async function GET(
     }
 
     // Get thread replies and count separately
-    console.log('Thread API: Fetching thread replies')
     const [threadReplies, replyCount] = await Promise.all([
       prisma.message.findMany({
         where: {
@@ -113,15 +103,10 @@ export async function GET(
       }),
     ])
 
-    console.log('Thread API: Found replies:', {
-      replyCount,
-      threadRepliesCount: threadReplies.length
-    })
 
     // Create thread if it doesn't exist
     let threadId = message.threadId
     if (!threadId) {
-      console.log('Thread API: Creating new thread')
       try {
         const thread = await prisma.thread.create({
           data: {
@@ -131,7 +116,6 @@ export async function GET(
           },
         })
         threadId = thread.id
-        console.log('Thread API: Created thread:', thread)
 
         // Update the message with the new thread ID
         await prisma.message.update({
@@ -161,11 +145,6 @@ export async function GET(
       messages: threadReplies,
     }
 
-    console.log('Thread API: Sending response:', {
-      rootMessageId: response.rootMessage.id,
-      threadId: response.rootMessage.thread.id,
-      messageCount: response.messages.length
-    })
 
     return new NextResponse(JSON.stringify(response))
   } catch (error) {
@@ -185,7 +164,6 @@ export async function POST(
   { params }: { params: { messageId: string } }
 ) {
   try {
-    console.log('Creating thread message for:', params.messageId)
     const session = await getServerSession(authOptions)
 
     if (!session?.user?.id) {

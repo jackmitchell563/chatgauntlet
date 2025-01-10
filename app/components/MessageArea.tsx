@@ -314,17 +314,6 @@ export function MessageArea({
         
         // Only log if there's a new message from another user
         if (hasNewMessages && isNewMessageFromOtherUser) {
-          console.log('New message from other user detected:', {
-            wasNearBottom,
-            shouldAutoScroll,
-            messageContainer: messageContainerRef.current ? {
-              scrollHeight: messageContainerRef.current.scrollHeight,
-              scrollTop: messageContainerRef.current.scrollTop,
-              clientHeight: messageContainerRef.current.clientHeight,
-              distanceFromBottom: messageContainerRef.current.scrollHeight - 
-                (messageContainerRef.current.scrollTop + messageContainerRef.current.clientHeight)
-            } : 'no container ref'
-          })
         }
         
         setMessages(mainMessages)
@@ -336,10 +325,6 @@ export function MessageArea({
               const container = messageContainerRef.current
               const targetScrollTop = container.scrollHeight - container.clientHeight
               
-              console.log('Attempting to scroll to new message:', {
-                currentScrollTop: container.scrollTop,
-                targetScrollTop
-              })
               
               // Use smooth scrolling
               container.scrollTo({
