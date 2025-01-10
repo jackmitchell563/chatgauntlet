@@ -129,9 +129,9 @@ export async function GET(
       user: message.user,
       reactions: message.reactions,
       attachments: message.attachments,
-      thread: message.replyCount > 0 || message.thread ? {
+      thread: message._count.threadReplies > 0 || message.thread ? {
         id: message.thread?.id || message.id,
-        messageCount: message.replyCount
+        messageCount: message._count.threadReplies
       } : undefined
     }))
 

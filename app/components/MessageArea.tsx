@@ -330,7 +330,7 @@ export function MessageArea({
           setMessages(prev => {
             // Merge new messages with existing ones, avoiding duplicates
             const messageMap = new Map(prev.map(msg => [msg.id, msg]))
-            mainMessages.forEach(msg => messageMap.set(msg.id, msg))
+            mainMessages.forEach((msg: Message) => messageMap.set(msg.id, msg))
             return Array.from(messageMap.values()).sort((a, b) => 
               new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
             )
