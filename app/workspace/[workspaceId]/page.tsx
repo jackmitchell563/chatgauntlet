@@ -27,6 +27,7 @@ export default function WorkspacePage() {
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Array<any>>([])
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const [shouldScrollToBottom, setShouldScrollToBottom] = useState(false)
 
   // Find the general channel or use the first channel as fallback
   const generalChannel = workspace.channels.find(channel => channel.name === 'general')
@@ -91,6 +92,11 @@ export default function WorkspacePage() {
   const handleChannelSelect = async (channel: { id: string; name: string }) => {
     // Clear search state first
     setSearchQuery('')
+    
+    // Clear messages before switching channels
+    setMessages([])
+    setIsLoadingMessages(true)
+    setShouldScrollToBottom(true)  // Set to true when switching channels
     
     // Validate that the channel exists before selecting
     const targetChannel = workspace.channels.find(c => c.id === channel.id)
@@ -237,6 +243,7 @@ export default function WorkspacePage() {
         console.error('Error fetching messages:', error)
       } finally {
         setIsLoadingMessages(false)
+        setShouldScrollToBottom(false)  // Reset after messages are loaded
       }
     }
 
@@ -321,6 +328,7 @@ export default function WorkspacePage() {
           onAddReaction={handleAddReaction}
           registerCleanup={registerCleanup}
           shouldScrollOnLoad={isInitialLoad}
+          shouldScrollToBottom={shouldScrollToBottom}
           searchQuery={searchQuery}
           onSearchResultClick={handleSearchResultClick}
           selectedMessageId={selectedMessageId}

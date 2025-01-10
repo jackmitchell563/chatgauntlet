@@ -86,8 +86,8 @@ function UserProfile({ user }: UserProfileProps) {
 }
 
 export function ThreadView({ 
-  rootMessage, 
-  messages, 
+  rootMessage: initialRootMessage, 
+  messages: initialMessages, 
   onClose,
   onSendMessage,
   onAddReaction,
@@ -97,11 +97,116 @@ export function ThreadView({
 }: ThreadViewProps) {
   const { data: session } = useSession()
   const [newMessage, setNewMessage] = useState('')
+  const [messages, setMessages] = useState(initialMessages)
+  const [rootMessage, setRootMessage] = useState(initialRootMessage)
   const messageContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { userStatuses } = useWorkspace()
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
   const [openEmojiPickerId, setOpenEmojiPickerId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Update root message when prop changes
+  useEffect(() => {
+    setRootMessage(initialRootMessage)
+  }, [initialRootMessage])
+
+  // Add SSE connection for thread updates
+  useEffect(() => {
+    if (!rootMessage.id || !session) return;
+
+    let eventSource: EventSource | null = null;
+    let retryCount = 0;
+    const maxRetries = 3;
+    let isMounted = true;
+
+    const setupSSE = () => {
+      if (!isMounted) return;
+
+      console.log('Setting up SSE connection for thread:', rootMessage.id);
+      eventSource = new EventSource(`/api/messages/${rootMessage.id}/thread/events`);
+
+      eventSource.onopen = () => {
+        console.log('Thread SSE connection opened');
+        retryCount = 0;
+      };
+
+      eventSource.onmessage = (event) => {
+        if (!isMounted) return;
+
+        const data = JSON.parse(event.data);
+        console.log('Thread SSE event received:', data);
+
+        switch (data.type) {
+          case 'THREAD_MESSAGE_ADDED':
+            setMessages(data.messages);
+            
+            // Auto-scroll for new messages
+            if (messageContainerRef.current) {
+              const isFromCurrentUser = data.message.user.id === session?.user?.id;
+              if (isFromCurrentUser) {
+                requestAnimationFrame(() => {
+                  messageContainerRef.current?.scrollTo({
+                    top: messageContainerRef.current.scrollHeight,
+                    behavior: 'smooth'
+                  });
+                });
+              }
+            }
+            break;
+
+          case 'REACTION_ADDED':
+          case 'REACTION_REMOVED':
+            // Update root message if it's the target
+            if (data.messageId === rootMessage.id) {
+              setRootMessage(prev => ({
+                ...prev,
+                reactions: data.reactions
+              }));
+            }
+            // Update thread message if it's the target
+            setMessages(prev => prev.map(msg =>
+              msg.id === data.messageId
+                ? { ...msg, reactions: data.reactions }
+                : msg
+            ));
+            break;
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('Thread SSE connection error:', error);
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+
+        if (!isMounted) return;
+
+        // Attempt to reconnect with exponential backoff
+        if (retryCount < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+          retryCount++;
+          console.log(`Attempting to reconnect thread SSE (attempt ${retryCount}/${maxRetries}) after ${delay}ms`);
+          setTimeout(setupSSE, delay);
+        } else {
+          console.error('Max thread SSE reconnection attempts reached');
+          setError('Lost connection to thread. Please refresh the page.');
+        }
+      };
+    };
+
+    setupSSE();
+
+    return () => {
+      console.log('Cleaning up thread SSE connection');
+      isMounted = false;
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    };
+  }, [rootMessage.id, session]);
 
   // Add formatMessageDate function
   const formatMessageDate = (date: Date) => {
@@ -190,13 +295,33 @@ export function ThreadView({
     }, 100)
   }, [pendingScrollToMessageId, onScrollComplete])
 
-  const handleSendMessage = () => {
-    if (newMessage.trim()) {
-      console.log('Sending thread message:', newMessage.trim())
-      onSendMessage(newMessage.trim())
-      setNewMessage('')
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !session?.user?.id) return;
+
+    const content = newMessage.trim();
+    setNewMessage('');
+
+    try {
+      const response = await fetch(`/api/messages/${rootMessage.id}/thread`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ content })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send message');
+      }
+
+      // Don't manually update messages - wait for SSE event
+    } catch (error) {
+      console.error('Error sending thread message:', error);
+      setError('Failed to send message. Please try again.');
+      setNewMessage(content); // Restore the message content
     }
-  }
+  };
 
   const formatTime = (dateString: string) => {
     const date = new Date(dateString)
@@ -497,7 +622,7 @@ export function ThreadView({
             placeholder="Reply in thread..."
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage(e)}
             ref={inputRef}
           />
           <Button 

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { PlusCircle, Hash, User, ChevronDown, ChevronRight, Settings, Building, Search } from 'lucide-react'
+import { PlusCircle, Hash, User, ChevronDown, ChevronRight, Settings, Building, Search, MoreVertical } from 'lucide-react'
 import { UserAvatar } from './UserAvatar'
 import {
   DropdownMenu,
@@ -17,6 +17,8 @@ import { useRouter } from 'next/navigation'
 import { useWorkspace } from '@/app/workspace/[workspaceId]/workspace-provider'
 import { SearchResults } from './SearchResults'
 import { useDebounce } from '@/app/hooks/useDebounce'
+import { CreateChannelDialog } from './CreateChannelDialog'
+import { EditChannelDialog } from './EditChannelDialog'
 
 interface Channel {
   id: string
@@ -83,7 +85,7 @@ export function Sidebar({
   backgroundColor
 }: SidebarProps) {
   const { data: session } = useSession()
-  const { userStatuses, updateUserStatus } = useWorkspace()
+  const { userStatuses, updateUserStatus, updateWorkspaceChannels } = useWorkspace()
   const [isChannelsSectionCollapsed, setIsChannelsSectionCollapsed] = useState(false)
   const [isDmSectionCollapsed, setIsDmSectionCollapsed] = useState(false)
   const [isResizing, setIsResizing] = useState(false)
@@ -94,6 +96,8 @@ export function Sidebar({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
+  const [isCreateChannelOpen, setIsCreateChannelOpen] = useState(false)
+  const [editingChannel, setEditingChannel] = useState<{ id: string; name: string } | null>(null)
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
 
   const userStatus = session?.user?.id ? userStatuses[session.user.id] || 'Active' : 'Active'
@@ -230,6 +234,50 @@ export function Sidebar({
     }
   }
 
+  const handleCreateChannel = (channel: any) => {
+    // Add the new channel to the list
+    onChannelSelect({
+      id: channel.id,
+      name: channel.name,
+      type: 'channel' as const
+    })
+  }
+
+  const handleChannelDelete = async (channelId: string) => {
+    try {
+      const res = await fetch(`/api/channels/${channelId}`, {
+        method: 'DELETE',
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.error || 'Failed to delete channel')
+      }
+
+      // Find the general channel
+      const generalChannel = channels.find(c => c.name === 'general')
+      if (!generalChannel) return
+
+      // If the deleted channel was selected, switch to #general
+      if (channelId === selectedChannelId) {
+        onChannelSelect(generalChannel)
+      }
+
+      // Update the channels list
+      const updatedChannels = channels.filter(c => c.id !== channelId)
+      updateWorkspaceChannels(updatedChannels)
+    } catch (error) {
+      console.error('Error deleting channel:', error)
+    }
+  }
+
+  const handleChannelUpdate = (updatedChannel: any) => {
+    const updatedChannels = channels.map(c => 
+      c.id === updatedChannel.id ? { ...c, name: updatedChannel.name } : c
+    )
+    updateWorkspaceChannels(updatedChannels)
+  }
+
   return (
     <div 
       ref={sidebarRef}
@@ -301,7 +349,15 @@ export function Sidebar({
             <ChevronDown className="h-4 w-4 mr-1 flex-shrink-0" />
           )}
           <span className="truncate">Channels</span>
-          <Button variant="ghost" size="sm" className="ml-auto flex-shrink-0">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="ml-auto flex-shrink-0"
+            onClick={(e) => {
+              e.stopPropagation()
+              setIsCreateChannelOpen(true)
+            }}
+          >
             <PlusCircle className="h-4 w-4" />
           </Button>
         </h2>
@@ -310,7 +366,7 @@ export function Sidebar({
             {channels.map((channel) => (
               <li 
                 key={channel.id} 
-                className={`mb-1 flex items-center cursor-pointer hover:bg-gray-700 rounded px-2 py-1 ${
+                className={`mb-1 flex items-center cursor-pointer hover:bg-gray-700 rounded px-2 py-1 group ${
                   selectedChannelId === channel.id ? 'bg-gray-700' : ''
                 }`}
                 onClick={() => handleChannelClick(channel)}
@@ -319,6 +375,37 @@ export function Sidebar({
                 <span className="truncate min-w-0">
                   {truncateText(channel.name, currentWidth - 60)}
                 </span>
+                {channel.name !== 'general' && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto p-0 h-6 w-6 opacity-0 group-hover:opacity-100"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-32">
+                      <DropdownMenuItem onClick={(e) => {
+                        e.stopPropagation()
+                        setEditingChannel(channel)
+                      }}>
+                        Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        className="text-red-600"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleChannelDelete(channel.id)
+                        }}
+                      >
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </li>
             ))}
           </ul>
@@ -403,6 +490,20 @@ export function Sidebar({
         className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-gray-600 transition-colors"
         onMouseDown={handleMouseDown}
       />
+      <CreateChannelDialog
+        isOpen={isCreateChannelOpen}
+        onClose={() => setIsCreateChannelOpen(false)}
+        onChannelCreated={handleCreateChannel}
+      />
+
+      {editingChannel && (
+        <EditChannelDialog
+          isOpen={true}
+          onClose={() => setEditingChannel(null)}
+          onChannelUpdated={handleChannelUpdate}
+          channel={editingChannel}
+        />
+      )}
     </div>
   )
 }

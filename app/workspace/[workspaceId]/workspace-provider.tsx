@@ -37,6 +37,7 @@ interface WorkspaceContextType {
   setSelectedChannelId: (id: string | null) => void
   userStatuses: { [userId: string]: string }
   updateUserStatus: (userId: string, status: string) => void
+  updateWorkspaceChannels: (channels: Channel[]) => void
 }
 
 interface WorkspaceWithDetails extends Workspace {
@@ -61,10 +62,11 @@ interface WorkspaceProviderProps {
 }
 
 export function WorkspaceProvider({ 
-  workspace, 
+  workspace: initialWorkspace, 
   userId,
   children 
 }: WorkspaceProviderProps) {
+  const [workspace, setWorkspace] = useState(initialWorkspace)
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(
     workspace.channels[0]?.id || null
   )
@@ -86,6 +88,46 @@ export function WorkspaceProvider({
     })
     return initialStatuses
   })
+
+  // Set up SSE connection for workspace events
+  useEffect(() => {
+    const eventSource = new EventSource(`/api/workspaces/${workspace.id}/events`)
+
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+      
+      switch (data.type) {
+        case 'CHANNEL_UPDATED':
+          setWorkspace(prev => ({
+            ...prev,
+            channels: prev.channels.map(c => 
+              c.id === data.channel.id ? data.channel : c
+            )
+          }))
+          break
+
+        case 'CHANNEL_DELETED':
+          setWorkspace(prev => ({
+            ...prev,
+            channels: prev.channels.filter(c => c.id !== data.channelId)
+          }))
+          // If user was in the deleted channel, switch to #general
+          if (selectedChannelId === data.channelId) {
+            setSelectedChannelId(data.generalChannelId)
+          }
+          break
+      }
+    }
+
+    eventSource.onerror = (error) => {
+      console.error('EventSource failed:', error)
+      eventSource.close()
+    }
+
+    return () => {
+      eventSource.close()
+    }
+  }, [workspace.id, selectedChannelId])
 
   // Update localStorage when statuses change
   useEffect(() => {
@@ -139,6 +181,13 @@ export function WorkspaceProvider({
     }
   }, [workspace.id])
 
+  const updateWorkspaceChannels = useCallback((channels: Channel[]) => {
+    setWorkspace(prev => ({
+      ...prev,
+      channels
+    }))
+  }, [])
+
   return (
     <WorkspaceContext.Provider
       value={{
@@ -148,6 +197,7 @@ export function WorkspaceProvider({
         setSelectedChannelId,
         userStatuses,
         updateUserStatus,
+        updateWorkspaceChannels,
       }}
     >
       {children}

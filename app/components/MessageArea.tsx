@@ -67,6 +67,7 @@ interface MessageAreaProps {
   onAddReaction: (messageId: string, emoji: { native: string }) => void
   registerCleanup: (cleanup: () => void) => void
   shouldScrollOnLoad?: boolean
+  shouldScrollToBottom?: boolean
   searchQuery?: string
   onSearchResultClick?: (messageId: string) => void
   selectedMessageId?: string | null
@@ -129,13 +130,19 @@ export function MessageArea({
   onAddReaction,
   registerCleanup,
   shouldScrollOnLoad = false,
+  shouldScrollToBottom,
   searchQuery,
   onSearchResultClick,
   selectedMessageId
 }: MessageAreaProps) {
   const { data: session, status } = useSession()
   const [newMessage, setNewMessage] = useState('')
-  const [messages, setMessages] = useState<Message[]>(initialMessages)
+  const [messages, setMessages] = useState<Message[]>(() => {
+    // Ensure initialMessages is an array and filter/sort it
+    return (Array.isArray(initialMessages) ? initialMessages : [])
+      .filter(msg => !msg.parentMessageId)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  });
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
@@ -162,30 +169,25 @@ export function MessageArea({
   const pendingScrollToMessageId = useRef<string | null>(null)
   const [pendingThreadScroll, setPendingThreadScroll] = useState<string | null>(null)
 
-  // Reset initial fetch flag when channel changes
+  // Add effect to handle channel changes
   useEffect(() => {
     if (channelId !== lastChannelIdRef.current) {
-      console.log('Channel changed from', lastChannelIdRef.current, 'to', channelId, {
-        pendingScrollId: pendingScrollToMessageId.current
-      })
-      lastChannelIdRef.current = channelId
-      initialFetchRef.current = false
-      // Don't set shouldScrollRef if we have a pending scroll
-      if (!pendingScrollToMessageId.current) {
-        shouldScrollRef.current = true
+      console.log('Channel changed, resetting state');
+      setMessages([]); // Reset messages when channel changes
+      setError(null);
+      lastChannelIdRef.current = channelId;
+      initialFetchRef.current = false;
+      shouldScrollRef.current = true; // This will trigger scroll to bottom after messages load
+      
+      // Immediately scroll to bottom of the empty container
+      if (messageContainerRef.current) {
+        messageContainerRef.current.scrollTo({
+          top: messageContainerRef.current.scrollHeight,
+          behavior: 'instant'
+        });
       }
-      setIsLoading(false)
-      inputRef.current?.focus()
     }
-  }, [channelId])
-
-  // Set scroll flag when shouldScrollOnLoad changes
-  useEffect(() => {
-    if (shouldScrollOnLoad) {
-      shouldScrollRef.current = true
-      initialFetchRef.current = false
-    }
-  }, [shouldScrollOnLoad])
+  }, [channelId]);
 
   const isNearBottom = () => {
     if (!messageContainerRef.current) return false
@@ -282,209 +284,225 @@ export function MessageArea({
     }, 100) // Timeout to ensure DOM is ready
   }, [messages])
 
+  // Replace the SSE effect
   useEffect(() => {
-    async function fetchMessages() {
-      if (!channelId || status !== 'authenticated' || !globalThis.isPollingEnabled) {
-        stopPolling()
-        return
-      }
+    if (!channelId || status !== 'authenticated') return;
+
+    let eventSource: EventSource | null = null;
+    let retryCount = 0;
+    const maxRetries = 3;
+    let isMounted = true;
+    
+    const setupSSE = () => {
+      if (!isMounted) return;
       
-      const fetchStart = Date.now()
-      console.log(`[Frontend Timing] Starting message fetch at ${new Date().toISOString()}`)
+      console.log('Setting up SSE connection for channel:', channelId);
+      eventSource = new EventSource(`/api/channels/${channelId}/events`);
+
+      eventSource.onopen = () => {
+        console.log('SSE connection opened');
+        retryCount = 0;
+      };
+
+      eventSource.onmessage = (event) => {
+        if (!isMounted) return;
+        
+        const data = JSON.parse(event.data);
+        console.log('Channel SSE event received:', data);
+
+        switch (data.type) {
+          case 'NEW_MESSAGE':
+            setMessages(prev => {
+              // Only add if not already present
+              if (!prev.find(m => m.id === data.message.id)) {
+                return [...prev, data.message].sort((a, b) => 
+                  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+                );
+              }
+              return prev;
+            });
+            break;
+
+          case 'MESSAGE_UPDATED':
+            setMessages(prev => prev.map(msg =>
+              msg.id === data.message.id ? data.message : msg
+            ));
+            break;
+
+          case 'MESSAGE_DELETED':
+            setMessages(prev => prev.filter(msg => msg.id !== data.messageId));
+            break;
+
+          case 'REACTION_ADDED':
+          case 'REACTION_REMOVED':
+            setMessages(prev => prev.map(msg =>
+              msg.id === data.messageId
+                ? { ...msg, reactions: data.reactions }
+                : msg
+            ));
+            break;
+
+          case 'THREAD_UPDATED':
+            // Update the root message's thread info
+            setMessages(prev => prev.map(msg =>
+              msg.id === data.threadId
+                ? {
+                    ...msg,
+                    thread: {
+                      id: msg.thread?.id || data.threadId,
+                      messageCount: data.messageCount
+                    }
+                  }
+                : msg
+            ));
+            break;
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('SSE connection error:', error);
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        
+        if (!isMounted) return;
+        
+        // Attempt to reconnect with exponential backoff
+        if (retryCount < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+          retryCount++;
+          console.log(`Attempting to reconnect SSE (attempt ${retryCount}/${maxRetries}) after ${delay}ms`);
+          setTimeout(setupSSE, delay);
+        } else {
+          console.error('Max SSE reconnection attempts reached');
+          setError('Lost connection to server. Please refresh the page.');
+        }
+      };
+    };
+
+    const fetchInitialMessages = async () => {
+      if (!isMounted) return;
       
       try {
-        // Add timestamp parameter to only fetch new messages
-        const url = new URL(`/api/channels/${channelId}/messages`, window.location.origin)
-        if (lastFetchTimestamp) {
-          url.searchParams.append('after', lastFetchTimestamp)
-        }
+        setIsLoading(true);
+        setError(null);
         
-        const fetchRequestStart = Date.now()
-        const res = await fetch(url.toString())
-        console.log(`[Frontend Timing] Network request completed in ${Date.now() - fetchRequestStart}ms`)
+        console.log('Fetching messages for channel:', channelId);
+        const res = await fetch(`/api/channels/${channelId}/messages`);
         
         if (!res.ok) {
-          if (res.status === 401) {
-            stopPolling()
-            return
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.error || `Failed to fetch messages: ${res.status}`);
+        }
+        
+        const data = await res.json();
+        console.log('Received messages:', data);
+        
+        if (!Array.isArray(data)) {
+          throw new Error('Invalid response format from server');
+        }
+        
+        // Filter out thread messages and sort by creation time
+        const mainMessages = data
+          .filter((msg: Message) => !msg.parentMessageId)
+          .sort((a: Message, b: Message) => 
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+        
+        if (isMounted) {
+          setMessages(mainMessages);
+          
+          // Scroll to bottom on initial load if needed
+          if (shouldScrollRef.current && messageContainerRef.current) {
+            messageContainerRef.current.scrollTo({
+              top: messageContainerRef.current.scrollHeight,
+              behavior: 'instant'
+            });
+            shouldScrollRef.current = false;
           }
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to fetch messages')
+          
+          initialFetchRef.current = true;
         }
-
-        const jsonStart = Date.now()
-        const data = await res.json()
-        console.log(`[Frontend Timing] JSON parsing completed in ${Date.now() - jsonStart}ms`)
-        
-        // Update last fetch timestamp
-        if (data.length > 0) {
-          lastFetchTimestamp = data[data.length - 1].createdAt
+      } catch (error) {
+        console.error('Error fetching messages:', error);
+        if (isMounted) {
+          setError(error instanceof Error ? error.message : 'Failed to load messages');
         }
-        
-        const processingStart = Date.now()
-        // Filter out messages that are part of a thread
-        const mainMessages = data.filter((msg: Message) => !msg.parentMessageId)
-        
-        // Only update messages if we have new ones
-        if (mainMessages.length > 0) {
-          setMessages(prev => {
-            // Merge new messages with existing ones, avoiding duplicates
-            const messageMap = new Map(prev.map(msg => [msg.id, msg]))
-            mainMessages.forEach((msg: Message) => messageMap.set(msg.id, msg))
-            return Array.from(messageMap.values()).sort((a, b) => 
-              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-            )
-          })
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
         }
-        console.log(`[Frontend Timing] Message processing completed in ${Date.now() - processingStart}ms`)
-        console.log(`[Frontend Timing] Total fetch operation completed in ${Date.now() - fetchStart}ms`)
-
-        // Check if we should auto-scroll
-        const wasNearBottom = isNearBottom()
-        const hasNewMessages = mainMessages.length > messages.length
-        const lastMessage = hasNewMessages ? mainMessages[mainMessages.length - 1] : null
-        const isNewMessageFromOtherUser = lastMessage && lastMessage.user.id !== session?.user?.id
-        const shouldAutoScroll = (wasNearBottom && hasNewMessages && isNewMessageFromOtherUser) || 
-                               (hasNewMessages && lastMessage?.user.id === session?.user?.id)
-        
-        // Only log if there's a new message from another user
-        if (hasNewMessages && isNewMessageFromOtherUser) {
-        }
-        
-        // Only auto-scroll if no pending scroll
-        if (!pendingScrollToMessageId.current) {
-          if (shouldAutoScroll) {
-            if (messageContainerRef.current && hasNewMessages && isNewMessageFromOtherUser) {
-              const container = messageContainerRef.current
-              const targetScrollTop = container.scrollHeight - container.clientHeight
-              
-              
-              // Use smooth scrolling
-              container.scrollTo({
-                top: targetScrollTop,
-                behavior: 'smooth'
-              })
-
-              // Check if we need to adjust scroll after animation
-              setTimeout(() => {
-                if (container.scrollTop < targetScrollTop) {
-                  console.log('Scroll adjustment needed for new message')
-                  container.scrollTo({
-                    top: container.scrollHeight - container.clientHeight,
-                    behavior: 'smooth'
-                  })
-                }
-              }, 300)
-            }
-          }
-        }
-
-        // Mark initial fetch as complete and clear loading state
-        initialFetchRef.current = true
-        setIsLoading(false)
-
-        // If there's an active thread, also fetch its messages
-        if (activeThread) {
-          const threadRes = await fetch(`/api/messages/${activeThread.rootMessage.id}/thread`)
-          if (threadRes.ok) {
-            const threadData = await threadRes.json()
-            setThreadMessages(prev => ({
-              ...prev,
-              [activeThread.rootMessage.id]: threadData.messages || []
-            }))
-          }
-        }
-      } catch (err) {
-        console.error('Error fetching messages:', err)
-        setError(err instanceof Error ? err.message : 'Failed to load messages')
-        setIsLoading(false)
       }
-    }
+    };
 
-    stopPolling() // Clear any existing interval
-    globalThis.isPollingEnabled = true // Reset the flag when channel changes
-    lastFetchTimestamp = null // Reset timestamp when channel changes
+    // Start the process
+    fetchInitialMessages().then(() => {
+      if (isMounted) {
+        setupSSE();
+      }
+    });
 
-    if (status === 'authenticated') {
-      fetchMessages()
-      // Set up polling interval with reduced frequency (5 seconds)
-      pollingIntervalRef.current = setInterval(fetchMessages, 5000)
-    }
-    
-    registerCleanup(stopPolling)
-    return stopPolling
-  }, [channelId, registerCleanup, status, activeThread, session?.user?.id])
-
-  const stopPolling = () => {
-    globalThis.isPollingEnabled = false
-    if (pollingIntervalRef.current) {
-      clearInterval(pollingIntervalRef.current)
-      pollingIntervalRef.current = undefined
-    }
-  }
+    // Cleanup
+    return () => {
+      console.log('Cleaning up SSE connection and state');
+      isMounted = false;
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    };
+  }, [channelId, status, session?.user?.id]);
 
   const handleSendMessage = async () => {
-    if (status !== 'authenticated') return
+    if (status !== 'authenticated' || !channelId) return;
     
-    if ((newMessage.trim() || stagedAttachments.length > 0) && channelId) {
-      try {
-        const res = await fetch(`/api/channels/${channelId}/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            content: newMessage.trim(),
-            attachments: stagedAttachments,
-          }),
-        })
+    const messageContent = newMessage.trim();
+    if ((!messageContent && stagedAttachments.length === 0)) return;
 
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to send message')
-        }
+    try {
+      setError(null);
+      const res = await fetch(`/api/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          content: messageContent,
+          attachments: stagedAttachments,
+        }),
+      });
 
-        const message = await res.json()
-        setMessages(prev => [...prev, message])
-        setNewMessage('')
-        setStagedAttachments([]) // Clear staged attachments after sending
-        
-        // Enhanced scroll behavior with multiple attempts
-        const scrollToBottom = () => {
-          if (messageContainerRef.current) {
-            const container = messageContainerRef.current
-            const targetScrollTop = container.scrollHeight - container.clientHeight
-            
-            // Smooth scroll to bottom
-            container.scrollTo({
-              top: targetScrollTop,
-              behavior: 'smooth'
-            })
-
-            // Check if we need to adjust scroll after animation
-            setTimeout(() => {
-              if (container.scrollTop < targetScrollTop) {
-                // If we haven't reached the bottom, try one more time
-                container.scrollTo({
-                  top: container.scrollHeight - container.clientHeight,
-                  behavior: 'smooth'
-                })
-              }
-            }, 300) // Wait for initial scroll animation
-          }
-        }
-
-        // Wait for next frame to ensure DOM is updated
-        requestAnimationFrame(() => {
-          // Wait a bit for any images/content to load
-          setTimeout(scrollToBottom, 100)
-        })
-      } catch (err) {
-        console.error('Error sending message:', err)
-        setError(err instanceof Error ? err.message : 'Failed to send message')
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to send message');
       }
+
+      // Clear input fields immediately for better UX
+      setNewMessage('');
+      setStagedAttachments([]);
+
+      // Add message to state immediately for optimistic update
+      setMessages(prev => {
+        if (prev.some(m => m.id === data.id)) return prev;
+        return [...prev, data].sort((a, b) => 
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        );
+      });
+
+      // Scroll to bottom
+      if (messageContainerRef.current) {
+        messageContainerRef.current.scrollTo({
+          top: messageContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    } catch (err) {
+      console.error('Error sending message:', err);
+      setError(err instanceof Error ? err.message : 'Failed to send message');
     }
-  }
+  };
 
   const handleAddReaction = async (messageId: string, emoji: { native: string }) => {
     if (status !== 'authenticated') return
@@ -874,6 +892,16 @@ export function MessageArea({
       setActiveThread(null)
     }
   }, [searchQuery])
+
+  // Add effect to watch for messages updates and scroll to bottom if needed
+  useEffect(() => {
+    if (shouldScrollToBottom && messageContainerRef.current && messages.length > 0) {
+      messageContainerRef.current.scrollTo({
+        top: messageContainerRef.current.scrollHeight,
+        behavior: 'instant'
+      })
+    }
+  }, [messages, shouldScrollToBottom])
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] w-full overflow-hidden">

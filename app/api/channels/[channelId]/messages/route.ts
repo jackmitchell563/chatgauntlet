@@ -3,122 +3,73 @@ import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { authOptions } from '../../../auth/[...nextauth]/options'
 import { prisma } from '@/app/lib/prisma'
-
-const createMessageSchema = z.object({
-  content: z.string(),
-  attachments: z.array(z.object({
-    name: z.string(),
-    type: z.string(),
-    url: z.string(),
-    size: z.number(),
-  })).optional(),
-})
+import { notifyChannelClients } from '../events/route'
 
 export async function GET(
   request: Request,
   { params }: { params: { channelId: string } }
 ) {
-  const requestStart = Date.now()
-  console.log(`[Timing] Message fetch request started at ${new Date().toISOString()}`)
-
   const session = await getServerSession(authOptions)
-  console.log(`[Timing] Auth check completed in ${Date.now() - requestStart}ms`)
-
   if (!session?.user?.id) {
-    return new NextResponse(
-      JSON.stringify({ error: 'You must be logged in' }),
-      { status: 401 }
-    )
+    return new NextResponse('Unauthorized', { status: 401 })
   }
 
   try {
-    const { searchParams } = new URL(request.url)
-    const afterTimestamp = searchParams.get('after')
-
-    const channelCheckStart = Date.now()
-    // First verify the channel exists and user has access
+    // Verify user has access to this channel
     const channel = await prisma.channel.findFirst({
       where: {
         id: params.channelId,
         workspace: {
           members: {
             some: {
-              userId: session.user.id,
-            },
-          },
-        },
-      },
+              userId: session.user.id
+            }
+          }
+        }
+      }
     })
-    console.log(`[Timing] Channel access check completed in ${Date.now() - channelCheckStart}ms`)
 
     if (!channel) {
-      return new NextResponse(
-        JSON.stringify({ error: 'Channel not found or access denied' }),
-        { status: 404 }
-      )
+      return new NextResponse('Channel not found', { status: 404 })
     }
 
-    const messagesQueryStart = Date.now()
-    // Get messages with their thread reply counts
-    const messages = await prisma.$transaction(async (tx) => {
-      const msgs = await tx.message.findMany({
-        where: {
-          channelId: params.channelId,
-          parentMessageId: null,
-          ...(afterTimestamp && {
-            createdAt: {
-              gt: new Date(afterTimestamp)
-            }
-          })
+    // First get all main messages
+    const messages = await prisma.message.findMany({
+      where: {
+        channelId: params.channelId,
+        parentMessageId: null // Only get main messages, not thread replies
+      },
+      orderBy: {
+        createdAt: 'asc'
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            image: true
+          }
         },
-        include: {
-          user: {
-            select: {
-              id: true,
-              name: true,
-              image: true,
-            },
-          },
-          reactions: {
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-          attachments: true,
-          thread: {
-            select: {
-              id: true,
-              rootMessageId: true
-            }
-          },
-          _count: {
-            select: {
-              threadReplies: true
+        reactions: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true
+              }
             }
           }
         },
-        orderBy: {
-          createdAt: 'asc',
-        },
-      })
-      console.log(`[Timing] Main message query completed in ${Date.now() - messagesQueryStart}ms`)
-
-      return msgs.map(msg => ({
-        ...msg,
-        thread: msg._count.threadReplies > 0 || msg.thread ? {
-          id: msg.thread?.id || msg.id,
-          messageCount: msg._count.threadReplies
-        } : undefined
-      }))
+        attachments: true,
+        _count: {
+          select: {
+            threadReplies: true // Count thread replies
+          }
+        }
+      }
     })
-    console.log(`[Timing] Total database operations completed in ${Date.now() - messagesQueryStart}ms`)
 
-    // Transform the messages to match our interface
+    // Transform the messages to include thread information
     const transformedMessages = messages.map(message => ({
       id: message.id,
       content: message.content,
@@ -129,20 +80,16 @@ export async function GET(
       user: message.user,
       reactions: message.reactions,
       attachments: message.attachments,
-      thread: message._count.threadReplies > 0 || message.thread ? {
-        id: message.thread?.id || message.id,
+      thread: message._count.threadReplies > 0 ? {
+        id: message.id, // Use message ID as thread ID
         messageCount: message._count.threadReplies
       } : undefined
     }))
 
-    console.log(`[Timing] Total request completed in ${Date.now() - requestStart}ms`)
-    return new NextResponse(JSON.stringify(transformedMessages))
+    return NextResponse.json(transformedMessages)
   } catch (error) {
     console.error('Error fetching messages:', error)
-    return new NextResponse(
-      JSON.stringify({ error: 'Failed to fetch messages' }),
-      { status: 500 }
-    )
+    return new NextResponse('Internal Server Error', { status: 500 })
   }
 }
 
@@ -151,40 +98,32 @@ export async function POST(
   { params }: { params: { channelId: string } }
 ) {
   const session = await getServerSession(authOptions)
-
   if (!session?.user?.id) {
-    return new NextResponse(
-      JSON.stringify({ error: 'You must be logged in' }),
-      { status: 401 }
-    )
+    return new NextResponse('Unauthorized', { status: 401 })
   }
 
   try {
-    const json = await request.json()
-    const body = createMessageSchema.parse(json)
+    const body = await request.json()
 
-    // Verify channel exists and user has access
+    // Verify user has access to this channel
     const channel = await prisma.channel.findFirst({
       where: {
         id: params.channelId,
         workspace: {
           members: {
             some: {
-              userId: session.user.id,
-            },
-          },
-        },
-      },
+              userId: session.user.id
+            }
+          }
+        }
+      }
     })
 
     if (!channel) {
-      return new NextResponse(
-        JSON.stringify({ error: 'Channel not found or access denied' }),
-        { status: 404 }
-      )
+      return new NextResponse('Channel not found', { status: 404 })
     }
 
-    // Create message with attachments if provided
+    // Create the message with attachments if any
     const message = await prisma.message.create({
       data: {
         content: body.content,
@@ -192,38 +131,55 @@ export async function POST(
         userId: session.user.id,
         attachments: body.attachments ? {
           createMany: {
-            data: body.attachments.map(attachment => ({
-              ...attachment,
-              userId: session.user.id,
-            })),
-          },
-        } : undefined,
+            data: body.attachments
+          }
+        } : undefined
       },
       include: {
         user: {
           select: {
             id: true,
             name: true,
-            image: true,
-          },
+            image: true
+          }
         },
-        reactions: true,
+        reactions: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true
+              }
+            }
+          }
+        },
         attachments: true,
-      },
+        _count: {
+          select: {
+            threadReplies: true
+          }
+        }
+      }
     })
 
-    return new NextResponse(JSON.stringify(message))
+    // Transform the message to include thread information
+    const transformedMessage = {
+      ...message,
+      thread: message._count.threadReplies > 0 ? {
+        id: message.id,
+        messageCount: message._count.threadReplies
+      } : undefined
+    }
+
+    // Notify all connected clients about the new message
+    notifyChannelClients(params.channelId, {
+      type: 'NEW_MESSAGE',
+      message: transformedMessage
+    })
+
+    return NextResponse.json(transformedMessage)
   } catch (error) {
     console.error('Error creating message:', error)
-    if (error instanceof z.ZodError) {
-      return new NextResponse(
-        JSON.stringify({ error: 'Invalid message data', details: error.errors }),
-        { status: 400 }
-      )
-    }
-    return new NextResponse(
-      JSON.stringify({ error: 'Failed to create message' }),
-      { status: 500 }
-    )
+    return new NextResponse('Internal Server Error', { status: 500 })
   }
 } 
