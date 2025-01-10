@@ -5,7 +5,9 @@
       "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
       "AllowedOrigins": [
         "http://localhost:3001",
-        "http://localhost:3000"
+        "http://localhost:3000",
+        "http://localhost:3009",
+        "https://chatgauntlet.onrender.com"
       ],
       "ExposeHeaders": ["ETag"],
       "MaxAgeSeconds": 3600

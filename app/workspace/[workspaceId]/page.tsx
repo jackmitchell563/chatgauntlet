@@ -124,11 +124,30 @@ export default function WorkspacePage() {
       }
 
       const channel = await res.json()
-      setSelectedChannelId(channel.id)
       
-      // Add the channel to workspace.channels if it's not already there
+      // First update the workspace channels if needed
       if (!workspace.channels.find(c => c.id === channel.id)) {
         workspace.channels = [...workspace.channels, channel]
+      }
+      
+      // Then set the selected channel ID
+      setSelectedChannelId(channel.id)
+      
+      // Force a message fetch by clearing messages
+      setMessages([])
+      setIsLoadingMessages(true)
+      
+      // Fetch messages for the new DM channel
+      try {
+        const messagesRes = await fetch(`/api/channels/${channel.id}/messages`)
+        if (messagesRes.ok) {
+          const data = await messagesRes.json()
+          setMessages(data)
+        }
+      } catch (error) {
+        console.error('Error fetching DM messages:', error)
+      } finally {
+        setIsLoadingMessages(false)
       }
     } catch (error) {
       console.error('Error handling DM:', error)
