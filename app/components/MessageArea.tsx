@@ -19,7 +19,8 @@ import { ThreadView } from './ThreadView'
 import { SearchResults } from './SearchResults'
 
 // Create a global flag for message polling
-let isPollingEnabled = true
+let isPollingEnabled = true;
+let lastFetchTimestamp: string | null = null;  // Track last fetch time
 
 interface Message {
   id: string
@@ -288,8 +289,20 @@ export function MessageArea({
         return
       }
       
+      const fetchStart = Date.now()
+      console.log(`[Frontend Timing] Starting message fetch at ${new Date().toISOString()}`)
+      
       try {
-        const res = await fetch(`/api/channels/${channelId}/messages`)
+        // Add timestamp parameter to only fetch new messages
+        const url = new URL(`/api/channels/${channelId}/messages`, window.location.origin)
+        if (lastFetchTimestamp) {
+          url.searchParams.append('after', lastFetchTimestamp)
+        }
+        
+        const fetchRequestStart = Date.now()
+        const res = await fetch(url.toString())
+        console.log(`[Frontend Timing] Network request completed in ${Date.now() - fetchRequestStart}ms`)
+        
         if (!res.ok) {
           if (res.status === 401) {
             stopPolling()
@@ -298,15 +311,37 @@ export function MessageArea({
           const data = await res.json()
           throw new Error(data.error || 'Failed to fetch messages')
         }
+
+        const jsonStart = Date.now()
         const data = await res.json()
+        console.log(`[Frontend Timing] JSON parsing completed in ${Date.now() - jsonStart}ms`)
         
+        // Update last fetch timestamp
+        if (data.length > 0) {
+          lastFetchTimestamp = data[data.length - 1].createdAt
+        }
+        
+        const processingStart = Date.now()
         // Filter out messages that are part of a thread
         const mainMessages = data.filter((msg: Message) => !msg.parentMessageId)
-        const previousMessageCount = messages.length
         
+        // Only update messages if we have new ones
+        if (mainMessages.length > 0) {
+          setMessages(prev => {
+            // Merge new messages with existing ones, avoiding duplicates
+            const messageMap = new Map(prev.map(msg => [msg.id, msg]))
+            mainMessages.forEach(msg => messageMap.set(msg.id, msg))
+            return Array.from(messageMap.values()).sort((a, b) => 
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            )
+          })
+        }
+        console.log(`[Frontend Timing] Message processing completed in ${Date.now() - processingStart}ms`)
+        console.log(`[Frontend Timing] Total fetch operation completed in ${Date.now() - fetchStart}ms`)
+
         // Check if we should auto-scroll
         const wasNearBottom = isNearBottom()
-        const hasNewMessages = mainMessages.length > previousMessageCount
+        const hasNewMessages = mainMessages.length > messages.length
         const lastMessage = hasNewMessages ? mainMessages[mainMessages.length - 1] : null
         const isNewMessageFromOtherUser = lastMessage && lastMessage.user.id !== session?.user?.id
         const shouldAutoScroll = (wasNearBottom && hasNewMessages && isNewMessageFromOtherUser) || 
@@ -316,8 +351,6 @@ export function MessageArea({
         if (hasNewMessages && isNewMessageFromOtherUser) {
         }
         
-        setMessages(mainMessages)
-
         // Only auto-scroll if no pending scroll
         if (!pendingScrollToMessageId.current) {
           if (shouldAutoScroll) {
@@ -370,16 +403,17 @@ export function MessageArea({
 
     stopPolling() // Clear any existing interval
     globalThis.isPollingEnabled = true // Reset the flag when channel changes
+    lastFetchTimestamp = null // Reset timestamp when channel changes
 
     if (status === 'authenticated') {
       fetchMessages()
-      // Set up polling interval
-      pollingIntervalRef.current = setInterval(fetchMessages, 1000)
+      // Set up polling interval with reduced frequency (5 seconds)
+      pollingIntervalRef.current = setInterval(fetchMessages, 5000)
     }
     
     registerCleanup(stopPolling)
     return stopPolling
-  }, [channelId, registerCleanup, status, activeThread, messages.length, session?.user?.id])
+  }, [channelId, registerCleanup, status, activeThread, session?.user?.id])
 
   const stopPolling = () => {
     globalThis.isPollingEnabled = false

@@ -18,7 +18,11 @@ export async function GET(
   request: Request,
   { params }: { params: { channelId: string } }
 ) {
+  const requestStart = Date.now()
+  console.log(`[Timing] Message fetch request started at ${new Date().toISOString()}`)
+
   const session = await getServerSession(authOptions)
+  console.log(`[Timing] Auth check completed in ${Date.now() - requestStart}ms`)
 
   if (!session?.user?.id) {
     return new NextResponse(
@@ -28,6 +32,10 @@ export async function GET(
   }
 
   try {
+    const { searchParams } = new URL(request.url)
+    const afterTimestamp = searchParams.get('after')
+
+    const channelCheckStart = Date.now()
     // First verify the channel exists and user has access
     const channel = await prisma.channel.findFirst({
       where: {
@@ -41,6 +49,7 @@ export async function GET(
         },
       },
     })
+    console.log(`[Timing] Channel access check completed in ${Date.now() - channelCheckStart}ms`)
 
     if (!channel) {
       return new NextResponse(
@@ -49,12 +58,18 @@ export async function GET(
       )
     }
 
+    const messagesQueryStart = Date.now()
     // Get messages with their thread reply counts
     const messages = await prisma.$transaction(async (tx) => {
       const msgs = await tx.message.findMany({
         where: {
           channelId: params.channelId,
           parentMessageId: null,
+          ...(afterTimestamp && {
+            createdAt: {
+              gt: new Date(afterTimestamp)
+            }
+          })
         },
         include: {
           user: {
@@ -75,29 +90,33 @@ export async function GET(
             },
           },
           attachments: true,
-          thread: true,
+          thread: {
+            select: {
+              id: true,
+              rootMessageId: true
+            }
+          },
+          _count: {
+            select: {
+              threadReplies: true
+            }
+          }
         },
         orderBy: {
           createdAt: 'asc',
         },
       })
+      console.log(`[Timing] Main message query completed in ${Date.now() - messagesQueryStart}ms`)
 
-      // Get reply counts for each message
-      const replyCounts = await Promise.all(
-        msgs.map(msg =>
-          tx.message.count({
-            where: {
-              parentMessageId: msg.id,
-            },
-          })
-        )
-      )
-
-      return msgs.map((msg, i) => ({
+      return msgs.map(msg => ({
         ...msg,
-        replyCount: replyCounts[i],
+        thread: msg._count.threadReplies > 0 || msg.thread ? {
+          id: msg.thread?.id || msg.id,
+          messageCount: msg._count.threadReplies
+        } : undefined
       }))
     })
+    console.log(`[Timing] Total database operations completed in ${Date.now() - messagesQueryStart}ms`)
 
     // Transform the messages to match our interface
     const transformedMessages = messages.map(message => ({
@@ -116,6 +135,7 @@ export async function GET(
       } : undefined
     }))
 
+    console.log(`[Timing] Total request completed in ${Date.now() - requestStart}ms`)
     return new NextResponse(JSON.stringify(transformedMessages))
   } catch (error) {
     console.error('Error fetching messages:', error)
