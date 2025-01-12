@@ -139,37 +139,65 @@ export function ThreadView({
 
         switch (data.type) {
           case 'THREAD_MESSAGE_ADDED':
-            setMessages(data.messages);
-            
-            // Auto-scroll for new messages
-            if (messageContainerRef.current) {
-              const isFromCurrentUser = data.message.user.id === session?.user?.id;
-              if (isFromCurrentUser) {
-                requestAnimationFrame(() => {
-                  messageContainerRef.current?.scrollTo({
-                    top: messageContainerRef.current.scrollHeight,
-                    behavior: 'smooth'
-                  });
-                });
+            setMessages(prev => {
+              // Only add if message doesn't exist
+              const messageExists = prev.some(m => m.id === data.message.id);
+              if (!messageExists) {
+                const newMessages = [...prev, data.message].sort((a, b) => 
+                  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+                );
+
+                // Check if we should auto-scroll
+                if (messageContainerRef.current) {
+                  const container = messageContainerRef.current;
+                  const threshold = 150; // pixels from bottom
+                  const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
+                  
+                  if (distanceFromBottom <= threshold) {
+                    requestAnimationFrame(() => {
+                      container.scrollTo({
+                        top: container.scrollHeight,
+                        behavior: 'smooth'
+                      });
+                    });
+                  }
+                }
+
+                return newMessages;
               }
-            }
+              return prev;
+            });
             break;
 
           case 'REACTION_ADDED':
           case 'REACTION_REMOVED':
+            console.log('ThreadView: Reaction event received:', {
+              type: data.type,
+              messageId: data.messageId,
+              reactions: data.reactions,
+              isRootMessage: data.messageId === rootMessage.id,
+              currentMessages: messages
+            });
+
             // Update root message if it's the target
             if (data.messageId === rootMessage.id) {
+              console.log('ThreadView: Updating root message reactions');
               setRootMessage(prev => ({
                 ...prev,
                 reactions: data.reactions
               }));
             }
+
             // Update thread message if it's the target
-            setMessages(prev => prev.map(msg =>
-              msg.id === data.messageId
-                ? { ...msg, reactions: data.reactions }
-                : msg
-            ));
+            setMessages(prev => {
+              const updated = prev.map(msg =>
+                msg.id === data.messageId
+                  ? { ...msg, reactions: data.reactions }
+                  : msg
+              );
+              console.log('ThreadView: Updated messages after reaction:', updated);
+              return updated;
+            });
             break;
         }
       };
@@ -295,33 +323,13 @@ export function ThreadView({
     }, 100)
   }, [pendingScrollToMessageId, onScrollComplete])
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !session?.user?.id) return;
-
-    const content = newMessage.trim();
-    setNewMessage('');
-
-    try {
-      const response = await fetch(`/api/messages/${rootMessage.id}/thread`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to send message');
-      }
-
-      // Don't manually update messages - wait for SSE event
-    } catch (error) {
-      console.error('Error sending thread message:', error);
-      setError('Failed to send message. Please try again.');
-      setNewMessage(content); // Restore the message content
+  const handleSendMessage = () => {
+    if (newMessage.trim()) {
+      console.log('Sending thread message:', newMessage.trim())
+      onSendMessage(newMessage.trim())
+      setNewMessage('')
     }
-  };
+  }
 
   const formatTime = (dateString: string) => {
     const date = new Date(dateString)
@@ -622,7 +630,7 @@ export function ThreadView({
             placeholder="Reply in thread..."
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage(e)}
+            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
             ref={inputRef}
           />
           <Button 

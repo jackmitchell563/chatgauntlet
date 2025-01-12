@@ -10,13 +10,16 @@ export async function POST(
   request: Request,
   { params }: { params: { messageId: string } }
 ) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user?.id) {
-    return new NextResponse('Unauthorized', { status: 401 })
-  }
-
   try {
+    const session = await getServerSession(authOptions)
+    if (!session?.user?.id) {
+      return new NextResponse('Unauthorized', { status: 401 })
+    }
+
     const body = await request.json()
+    if (!body.emoji || typeof body.emoji !== 'string') {
+      return new NextResponse('Invalid emoji', { status: 400 })
+    }
 
     // Get the message to verify access and get channelId
     const message = await prisma.message.findFirst({
@@ -87,16 +90,18 @@ export async function POST(
         reactions: updatedMessage?.reactions || []
       }
 
-      // Notify channel clients
+      // Always notify channel clients
       notifyChannelClients(message.channelId, eventData)
 
       // If this is a thread message, notify thread clients
       if (message.parentMessageId) {
         notifyThreadClients(message.parentMessageId, eventData)
-      } else if (await hasThreadReplies(params.messageId)) {
-        // If this is a root message with replies, notify thread clients
-        notifyThreadClients(params.messageId, eventData)
       }
+      // If this is a root message with thread, notify its thread clients
+      else {
+        notifyThreadClients(message.id, eventData)
+      }
+
     } else {
       // Add new reaction
       await prisma.reaction.create({
@@ -133,15 +138,16 @@ export async function POST(
         reactions: updatedMessage?.reactions || []
       }
 
-      // Notify channel clients
+      // Always notify channel clients
       notifyChannelClients(message.channelId, eventData)
 
       // If this is a thread message, notify thread clients
       if (message.parentMessageId) {
         notifyThreadClients(message.parentMessageId, eventData)
-      } else if (await hasThreadReplies(params.messageId)) {
-        // If this is a root message with replies, notify thread clients
-        notifyThreadClients(params.messageId, eventData)
+      }
+      // If this is a root message with thread, notify its thread clients
+      else {
+        notifyThreadClients(message.id, eventData)
       }
     }
 
