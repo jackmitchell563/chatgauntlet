@@ -1,0 +1,5 @@
+import { channelEventsOptions, notifyChannelClients } from './options'
+
+const handler = channelEventsOptions
+export { handler as GET, notifyChannelClients }
+export default channelEventsOptions 

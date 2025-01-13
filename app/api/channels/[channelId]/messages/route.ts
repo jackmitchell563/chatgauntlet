@@ -3,7 +3,7 @@ import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { authOptions } from '../../../auth/[...nextauth]/options'
 import { prisma } from '@/app/lib/prisma'
-import { notifyChannelClients } from '../events/route'
+import { notifyChannelClients } from '../events/options'
 
 export async function GET(
   request: Request,

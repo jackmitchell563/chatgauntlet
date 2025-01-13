@@ -1,0 +1,5 @@
+import { threadEventsOptions, notifyThreadClients } from './options'
+
+const handler = threadEventsOptions
+export { handler as GET, notifyThreadClients }
+export default threadEventsOptions 

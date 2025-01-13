@@ -23,7 +23,11 @@ import { EditChannelDialog } from './EditChannelDialog'
 interface Channel {
   id: string
   name: string
-  type: 'channel' | 'dm'
+  type: 'PUBLIC' | 'PRIVATE' | 'DM' | 'channel' | 'dm'
+  description?: string | null
+  workspaceId?: string
+  createdAt?: Date
+  updatedAt?: Date
 }
 
 interface DirectMessage {
@@ -239,7 +243,11 @@ export function Sidebar({
     onChannelSelect({
       id: channel.id,
       name: channel.name,
-      type: 'channel' as const
+      type: channel.type || 'PUBLIC',
+      ...(channel.description && { description: channel.description }),
+      ...(channel.workspaceId && { workspaceId: channel.workspaceId }),
+      ...(channel.createdAt && { createdAt: new Date(channel.createdAt) }),
+      ...(channel.updatedAt && { updatedAt: new Date(channel.updatedAt) })
     })
   }
 
@@ -263,8 +271,17 @@ export function Sidebar({
         onChannelSelect(generalChannel)
       }
 
-      // Update the channels list
-      const updatedChannels = channels.filter(c => c.id !== channelId)
+      // Update the channels list with correct types and ensure optional fields are not undefined
+      const updatedChannels = channels
+        .filter(c => c.id !== channelId)
+        .map(c => ({
+          ...c,
+          type: c.type === 'channel' ? 'PUBLIC' : c.type === 'dm' ? 'DM' : c.type,
+          description: c.description || null,
+          workspaceId: c.workspaceId || '',
+          createdAt: c.createdAt || new Date(),
+          updatedAt: c.updatedAt || new Date()
+        }))
       updateWorkspaceChannels(updatedChannels)
     } catch (error) {
       console.error('Error deleting channel:', error)
@@ -273,7 +290,22 @@ export function Sidebar({
 
   const handleChannelUpdate = (updatedChannel: any) => {
     const updatedChannels = channels.map(c => 
-      c.id === updatedChannel.id ? { ...c, name: updatedChannel.name } : c
+      c.id === updatedChannel.id ? {
+        ...c,
+        name: updatedChannel.name,
+        type: c.type === 'channel' ? 'PUBLIC' : c.type === 'dm' ? 'DM' : c.type,
+        description: updatedChannel.description || null,
+        workspaceId: c.workspaceId || '',
+        createdAt: c.createdAt || new Date(),
+        updatedAt: new Date(updatedChannel.updatedAt || Date.now())
+      } : {
+        ...c,
+        type: c.type === 'channel' ? 'PUBLIC' : c.type === 'dm' ? 'DM' : c.type,
+        description: c.description || null,
+        workspaceId: c.workspaceId || '',
+        createdAt: c.createdAt || new Date(),
+        updatedAt: c.updatedAt || new Date()
+      }
     )
     updateWorkspaceChannels(updatedChannels)
   }

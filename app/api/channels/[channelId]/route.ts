@@ -3,7 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '../../auth/[...nextauth]/options'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
-import { notifyWorkspaceClients } from '../../workspaces/[workspaceId]/events/route'
+import { notifyWorkspaceClients } from '../../workspaces/[workspaceId]/events/options'
 
 const updateChannelSchema = z.object({
   name: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, {

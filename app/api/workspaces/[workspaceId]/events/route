@@ -1,0 +1,5 @@
+import { workspaceEventsOptions, notifyWorkspaceClients } from './options'
+
+const handler = workspaceEventsOptions
+export { handler as GET, notifyWorkspaceClients }
+export default workspaceEventsOptions 

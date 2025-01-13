@@ -1,20 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
-import { z } from 'zod'
 import { authOptions } from '../../../../auth/[...nextauth]/options'
-import { prisma } from '@/app/lib/prisma'
-
-// Store active connections per thread
-const threadConnections = new Map<string, Set<(data: string) => void>>()
-
-// Helper to send events to all thread clients
-export function notifyThreadClients(messageId: string, event: any) {
-  const connections = threadConnections.get(messageId)
-  if (connections) {
-    const eventData = `data: ${JSON.stringify(event)}\n\n`
-    connections.forEach(client => client(eventData))
-  }
-}
+import { threadEventsOptions } from './options'
 
 export async function GET(
   request: Request,
@@ -25,47 +12,23 @@ export async function GET(
     return new NextResponse('Unauthorized', { status: 401 })
   }
 
-  // Verify user has access to this thread
-  const message = await prisma.message.findFirst({
-    where: {
-      id: params.messageId,
-      channel: {
-        workspace: {
-          members: {
-            some: {
-              userId: session.user.id
-            }
-          }
-        }
-      }
-    }
-  })
-
-  if (!message) {
-    return new NextResponse('Thread not found', { status: 404 })
-  }
-
   const stream = new TransformStream()
   const writer = stream.writable.getWriter()
   const encoder = new TextEncoder()
 
-  // Register client connection
-  if (!threadConnections.has(params.messageId)) {
-    threadConnections.set(params.messageId, new Set())
-  }
-  const connections = threadConnections.get(params.messageId)!
-
   const clientCallback = (data: string) => {
     writer.write(encoder.encode(data)).catch(console.error)
   }
-  connections.add(clientCallback)
+
+  try {
+    await threadEventsOptions.handleConnection(params.messageId, session.user.id, clientCallback)
+  } catch (error) {
+    return new NextResponse('Thread not found', { status: 404 })
+  }
 
   // Clean up on disconnect
   request.signal.addEventListener('abort', () => {
-    connections.delete(clientCallback)
-    if (connections.size === 0) {
-      threadConnections.delete(params.messageId)
-    }
+    threadEventsOptions.handleDisconnection(params.messageId, clientCallback)
     writer.close().catch(console.error)
   })
 

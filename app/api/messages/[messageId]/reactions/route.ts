@@ -3,8 +3,8 @@ import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { authOptions } from '../../../auth/[...nextauth]/options'
 import { prisma } from '@/app/lib/prisma'
-import { notifyChannelClients } from '@/app/api/channels/[channelId]/events/route'
-import { notifyThreadClients } from '../thread/events/route'
+import { notifyChannelClients } from '@/app/api/channels/[channelId]/events/options'
+import { notifyThreadClients } from '../thread/events/options'
 
 export async function POST(
   request: Request,
