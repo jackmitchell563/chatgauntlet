@@ -299,16 +299,61 @@ export function MessageArea({
             }
             break;
 
+          case 'THREAD_MESSAGE_ADDED':
+            // Update the thread count in the main message list using the message data directly
+            setMessages(prev => prev.map(msg =>
+              msg.id === data.message.parentMessageId
+                ? {
+                    ...msg,
+                    thread: {
+                      id: msg.id,
+                      messageCount: data.messages.length,
+                      lastMessage: data.message
+                    }
+                  }
+                : msg
+            ));
+
+            // Update thread messages if this is the current thread
+            if (activeThread?.rootMessage.id === data.message.parentMessageId) {
+              setThreadMessages(prev => ({
+                ...prev,
+                [data.message.parentMessageId]: data.messages
+              }));
+
+              setActiveThread(prev => prev ? {
+                ...prev,
+                messages: data.messages
+              } : null);
+            }
+            break;
+
           case 'THREAD_UPDATED':
             setMessages(prev => prev.map(msg =>
               msg.id === data.threadId
                 ? {
                     ...msg,
-                    threadMessageCount: data.messageCount,
-                    lastThreadMessage: data.messages[data.messages.length - 1]
+                    thread: {
+                      id: data.threadId,
+                      messageCount: data.messageCount
+                    }
                   }
                 : msg
             ));
+            
+            // Also update threadMessages state to stay in sync
+            setThreadMessages(prev => ({
+              ...prev,
+              [data.threadId]: data.messages
+            }));
+            
+            // Update active thread if this is the current thread
+            if (activeThread?.rootMessage.id === data.threadId) {
+              setActiveThread(prev => prev ? {
+                ...prev,
+                messages: data.messages
+              } : null);
+            }
             break;
         }
       };
@@ -1071,10 +1116,7 @@ export function MessageArea({
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>
-                                {activeThread?.rootMessage.id === message.id 
-                                  ? `${threadMessages[message.id]?.length || 0} ${threadMessages[message.id]?.length === 1 ? 'reply' : 'replies'}`
-                                  : `${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`
-                                }
+                                {`${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`}
                               </span>
                             </button>
                           )}
@@ -1155,10 +1197,7 @@ export function MessageArea({
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>
-                                {activeThread?.rootMessage.id === message.id 
-                                  ? `${threadMessages[message.id]?.length || 0} ${threadMessages[message.id]?.length === 1 ? 'reply' : 'replies'}`
-                                  : `${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`
-                                }
+                                {`${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`}
                               </span>
                             </button>
                           )}
