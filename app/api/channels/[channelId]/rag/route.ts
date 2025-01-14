@@ -20,7 +20,7 @@ async function generateQueries(input: string): Promise<string[]> {
   console.log('Generating queries for input:', input);
   const llm = new ChatOpenAI({ 
     temperature: 0,
-    modelName: "gpt-4-turbo-preview"
+    modelName: "gpt-4o-mini"
   });
   const outputParser = new StringOutputParser();
   
@@ -112,6 +112,15 @@ async function ragPipeline(query: string) {
   const rerankedResults = reciprocalRankFusion(retrievalResults);
   console.log('Fusion complete');
   
+  // Log ranked documents
+  console.log('\nRanked relevant documents:');
+  rerankedResults.forEach((doc, index) => {
+    console.log(`\n${index + 1}. Score: ${doc.score.toFixed(4)}`);
+    console.log(`Content: ${doc.document.pageContent}`);
+    console.log(`Metadata: ${JSON.stringify(doc.document.metadata, null, 2)}`);
+  });
+  console.log('\n'); // Add spacing after documents
+  
   return rerankedResults;
 }
 
@@ -119,7 +128,7 @@ async function ragPipeline(query: string) {
 async function getAIResponseWithContext(query: string, context: string): Promise<string> {
   const llm = new ChatOpenAI({
     temperature: 0.7,
-    modelName: "gpt-4-turbo-preview"
+    modelName: "gpt-4o-mini"
   });
   
   // Create the prompt with context

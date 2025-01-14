@@ -2,154 +2,11 @@
 
 This document provides a comprehensive overview of the components used in the application, their functionality, and their interactions.
 
-## Directory Structure
+## Core Data Structures
 
-The components are located in the `app/components` directory. Here's an overview of the main components:
-
-- `LoginForm.tsx` - Handles user authentication
-- `MessageArea.tsx` - Main messaging interface
-- `ThreadView.tsx` - Thread/conversation view component
-- `Sidebar.tsx` - Application sidebar navigation
-- `SearchResults.tsx` - Search functionality display
-- `TopBar.tsx` - Top navigation bar
-- `JoinWorkspaceDialog.tsx` - Workspace joining interface
-- `SettingsMenu.tsx` - User settings interface
-- `UserAvatar.tsx` - User avatar display component
-- `ui/` - Directory containing UI utility components
-
-## Component Details
-
-### LoginForm (`LoginForm.tsx`)
-
-A client-side component that handles user authentication.
-
-**Key Features:**
-- Form submission handling with email and password fields
-- API integration with `/api/auth/login` endpoint
-- Error handling and user feedback
-- Styled with Tailwind CSS
-
-**Props:** None (self-contained component)
-
-**API Integration:**
-- POST `/api/auth/login`
-  - Request Body: `{ email: string, password: string }`
-  - Response: Success message or error details
-
-### MessageArea (`MessageArea.tsx`)
-
-The main messaging interface component that handles message display, sending, and interactions.
-
-**Key Features:**
-- Real-time message display
-- Message sending with text and attachments
-- Emoji reactions
-- Thread support
-- File attachments
-- Message search
-- User status integration
-
-**Props:**
+### Message
 ```typescript
-interface MessageAreaProps {
-  channelId: string | undefined
-  channelName: string | undefined
-  channelType: 'channel' | 'dm' | undefined
-  messages: Message[]
-  onSendMessage: (content: string) => void
-  onAddReaction: (messageId: string, emoji: { native: string }) => void
-  registerCleanup: (cleanup: () => void) => void
-  shouldScrollOnLoad?: boolean
-  searchQuery?: string
-  onSearchResultClick?: (messageId: string) => void
-  selectedMessageId?: string | null
-}
-```
-
-**Key Functions:**
-- `handleSendMessage`: Processes new message submission
-- `handleAddReaction`: Manages emoji reactions
-- `handleOpenThread`: Opens message threads
-- `handleFileSelect`: Processes file attachments
-- `performSearch`: Handles message searching
-
-**State Management:**
-- Manages message polling
-- Tracks user statuses
-- Handles scroll position
-- Manages file attachments
-
-### ThreadView (`ThreadView.tsx`)
-
-Component for displaying and interacting with message threads.
-
-**Key Features:**
-- Displays thread messages
-- Supports message replies
-- Shows user profiles
-- Handles emoji reactions
-- Real-time updates
-
-**Props:**
-```typescript
-interface ThreadViewProps {
-  rootMessage: ThreadMessage
-  messages: ThreadMessage[]
-  onClose: () => void
-  onSendMessage: (content: string) => void
-  onAddReaction: (messageId: string, emoji: { native: string }) => void
-  openTimestamp: number
-  pendingScrollToMessageId?: string | null
-  onScrollComplete?: () => void
-}
-```
-
-**Subcomponents:**
-- `UserProfile`: Displays user information and status
-  ```typescript
-  interface UserProfileProps {
-    user: {
-      id: string
-      name: string | null
-      image: string | null
-    }
-  }
-  ```
-
-**Key Functions:**
-- `formatMessageDate`: Formats message timestamps
-- `handleSendMessage`: Processes thread replies
-- `renderReactions`: Displays message reactions
-- `handleAddReaction`: Manages emoji reactions
-
-**Integration:**
-- Uses NextAuth for session management
-- Integrates with workspace context for user statuses
-- Uses UI components from the `ui/` directory
-
-### SearchResults (`SearchResults.tsx`)
-
-A component that displays search results for messages in a channel or workspace.
-
-**Key Features:**
-- Displays message search results with user information
-- Shows message content and timestamps
-- Indicates thread information if available
-- Supports full-screen and inline display modes
-- Handles result selection
-
-**Props:**
-```typescript
-interface SearchResultsProps {
-  results: SearchResult[]
-  onResultClick: (messageId: string) => void
-  isFullScreen?: boolean
-}
-```
-
-**Data Structure:**
-```typescript
-interface SearchResult {
+interface Message {
   id: string
   content: string
   createdAt: string
@@ -170,255 +27,287 @@ interface SearchResult {
     id: string
     messageCount: number
   }
-}
-```
-
-**Key Features:**
-- Empty state handling
-- Responsive layout
-- Thread count display
-- Time formatting using `date-fns`
-- User avatar integration
-
-### Sidebar (`Sidebar.tsx`)
-
-The main navigation component that provides access to channels, direct messages, and workspace features.
-
-**Key Features:**
-- Workspace information display
-- Channel list management
-- Direct messages list
-- Search functionality
-- User status management
-- Resizable sidebar
-- Section collapsing
-
-**Props:**
-```typescript
-interface SidebarProps {
-  workspace: {
+  parentMessageId?: string | null
+  attachments?: {
+    id: string
     name: string
-    logo?: string | null
+    type: string
+    url: string
+    size: number
+  }[]
+  isAiResponse?: boolean
+}
+```
+
+### ThreadState
+```typescript
+interface ThreadState {
+  rootMessage: Message
+  messages: Message[]
+}
+```
+
+## Component Details
+
+### MessageArea (`MessageArea.tsx`)
+
+The main messaging interface component that handles message display, sending, and AI interactions.
+
+**State:**
+```typescript
+const [newMessage, setNewMessage] = useState('')
+const [messages, setMessages] = useState<Message[]>([])
+const [isLoading, setIsLoading] = useState(false)
+const [error, setError] = useState<string | null>(null)
+const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
+const [activeThread, setActiveThread] = useState<ThreadState | null>(null)
+const [threadMessages, setThreadMessages] = useState<{ [threadId: string]: Message[] }>({})
+const [openEmojiPickerId, setOpenEmojiPickerId] = useState<string | null>(null)
+const [uploadingFiles, setUploadingFiles] = useState<{ [key: string]: { progress: number; name: string } }>({})
+const [stagedAttachments, setStagedAttachments] = useState<{
+  name: string;
+  type: string;
+  url: string;
+  size: number;
+}[]>([])
+const [isAiEnabled, setIsAiEnabled] = useState(false)
+```
+
+**Refs:**
+```typescript
+const inputRef = useRef<HTMLInputElement>(null)
+const fileInputRef = useRef<HTMLInputElement>(null)
+const messageContainerRef = useRef<HTMLDivElement>(null)
+const sseConnectionRef = useRef<EventSource | null>(null)
+const pendingScrollToMessageId = useRef<string | null>(null)
+```
+
+**Key Functions:**
+```typescript
+// Message Handling
+async function handleSendMessage(): Promise<void>
+// Sends message and handles AI response if enabled
+// Manages loading states and error handling
+
+async function handleAddReaction(messageId: string, emoji: { native: string }): Promise<void>
+// Adds/toggles emoji reactions on messages
+// Updates both main messages and thread messages if needed
+
+async function handleOpenThread(messageId: string): Promise<void>
+// Opens thread view for a message
+// Fetches thread messages and manages thread state
+
+async function handleSendThreadMessage(content: string): Promise<void>
+// Sends messages within a thread
+// Updates thread counts and message lists
+
+// File Handling
+async function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>): Promise<void>
+// Handles file uploads
+// Manages upload progress and staged attachments
+
+function removeStagedAttachment(index: number): void
+// Removes files before sending
+
+// Search and Navigation
+async function handleSearchResultClick(messageId: string): Promise<void>
+// Handles navigation to search results
+// Manages scroll behavior and thread opening
+```
+
+**SSE Event Handling:**
+```typescript
+// Event Types
+type MessageEvent = {
+  type: 'NEW_MESSAGE' | 'MESSAGE_UPDATED' | 'MESSAGE_DELETED'
+  message?: Message
+  messageId?: string
+}
+
+type ReactionEvent = {
+  type: 'REACTION_ADDED' | 'REACTION_REMOVED'
+  messageId: string
+  reactions: Message['reactions']
+}
+
+type ThreadEvent = {
+  type: 'THREAD_MESSAGE_ADDED' | 'THREAD_UPDATED'
+  threadId: string
+  message?: Message
+  messages: Message[]
+  messageCount: number
+}
+
+// Connection Management
+function setupSSE(): void
+// Establishes SSE connection
+// Handles reconnection with exponential backoff
+// Processes different event types
+```
+
+### ThreadView (`ThreadView.tsx`)
+
+**Props Interface:**
+```typescript
+interface ThreadViewProps {
+  rootMessage: ThreadMessage
+  messages: ThreadMessage[]
+  onClose: () => void
+  onSendMessage: (content: string) => void
+  onAddReaction: (messageId: string, emoji: { native: string }) => void
+  openTimestamp: number
+  pendingScrollToMessageId?: string | null
+  onScrollComplete?: () => void
+}
+```
+
+**Key Functions:**
+```typescript
+function formatMessageDate(date: Date): string
+// Formats message timestamps with relative time
+
+function renderReactions(messageId: string, reactions: Message['reactions']): JSX.Element
+// Renders reaction buttons with counts and tooltips
+
+function handleSendMessage(): Promise<void>
+// Sends messages in thread context
+```
+
+### SearchResults (`SearchResults.tsx`)
+
+**Props and Types:**
+```typescript
+interface SearchResultsProps {
+  results: SearchResult[]
+  onResultClick: (messageId: string) => void
+  isFullScreen?: boolean
+}
+
+interface SearchResult extends Message {
+  score?: number  // Added by RAG search
+}
+```
+
+## API Endpoints
+
+### Messages
+```typescript
+// GET /api/channels/${channelId}/messages
+// Returns Message[]
+
+// POST /api/channels/${channelId}/messages
+// Body: { content: string, attachments?: Attachment[], isAiResponse?: boolean }
+// Returns: Message
+
+// GET /api/messages/${messageId}/thread
+// Returns: { messages: Message[] }
+
+// POST /api/messages/${messageId}/thread
+// Body: { content: string }
+// Returns: Message
+```
+
+### RAG/AI
+```typescript
+// POST /api/channels/${channelId}/rag
+// Body: { message: string }
+// Returns: {
+//   response: string,
+//   context: {
+//     content: string,
+//     metadata: any,
+//     score: number
+//   }[]
+// }
+```
+
+### Real-time Events
+```typescript
+// GET /api/channels/${channelId}/events
+// SSE Endpoint
+// Events:
+//   - message.new: { type: 'NEW_MESSAGE', message: Message }
+//   - message.updated: { type: 'MESSAGE_UPDATED', message: Message }
+//   - message.deleted: { type: 'MESSAGE_DELETED', messageId: string }
+//   - reaction.added: { type: 'REACTION_ADDED', messageId: string, reactions: Reaction[] }
+//   - reaction.removed: { type: 'REACTION_REMOVED', messageId: string, reactions: Reaction[] }
+//   - thread.message.added: { type: 'THREAD_MESSAGE_ADDED', threadId: string, message: Message, messages: Message[] }
+//   - thread.updated: { type: 'THREAD_UPDATED', threadId: string, messageCount: number }
+```
+
+## Database Schema (Prisma)
+
+```prisma
+model Message {
+  id          String     @id @default(cuid())
+  content     String     @db.Text
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  channelId   String
+  userId      String
+  edited      Boolean    @default(false)
+  deleted     Boolean    @default(false)
+  deletedAt   DateTime?
+  isAiResponse Boolean   @default(false)
+  
+  // Relations
+  channel     Channel    @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [userId], references: [id])
+  reactions   Reaction[]
+  attachments Attachment[]
+  
+  // Thread fields
+  thread      Thread?    @relation("ThreadRoot")
+  threadId    String?    @unique
+  threadReplies Message[] @relation("ThreadReplies")
+  parentMessage Message? @relation("ThreadReplies", fields: [parentMessageId], references: [id])
+  parentMessageId String?
+
+  @@index([channelId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([threadId])
+  @@index([parentMessageId])
+}
+```
+
+## Vector Store Integration (Pinecone)
+
+**Message Vector Format:**
+```typescript
+interface MessageVector {
+  id: string
+  content: string
+  metadata: {
+    channelId: string
+    userId: string
+    createdAt: string
+    workspaceId: string
   }
-  channels: Channel[]
-  directMessages: DirectMessage[]
-  onChannelSelect: (channel: Channel) => void
-  onDirectMessageSelect: (dm: DirectMessage) => void
-  selectedChannelId: string | null
-  width: number
-  onResize: (width: number) => void
-  onSearchResultClick: (messageId: string) => void
-  onShowFullSearch: (query: string) => void
 }
 ```
 
-**Data Structures:**
+**Sync Functions:**
 ```typescript
-interface Channel {
-  id: string
-  name: string
-  type: string
-}
+// In lib/sync.ts
+async function initPinecone(): Promise<any>
+// Initializes Pinecone connection
 
-interface DirectMessage {
-  id: string
-  name: string
-}
-```
+async function getMessagesForSync(lastSyncTime?: Date): Promise<Message[]>
+// Retrieves messages that need syncing
 
-**Key Functions:**
-- `handleStatusChange`: Updates user status
-- `handleChannelClick`: Handles channel selection
-- `toggleChannelsSection`: Collapses/expands channels list
-- `toggleDmSection`: Collapses/expands DMs list
-- `handleMouseDown`: Manages sidebar resizing
-- `performSearch`: Handles search functionality
-- `handleSearchKeyDown`: Manages search input interactions
+async function syncMessagesToPinecone(messages: Message[]): Promise<{
+  vectorized: number
+  deleted: number
+}>
+// Syncs messages with Pinecone
+// Handles both new/updated messages and deletions
 
-**Integration:**
-- Uses NextAuth for session management
-- Integrates with workspace context
-- Uses custom hooks (`useDebounce`)
-- Implements real-time user status updates
+async function fullSync(): Promise<{ vectorized: number; deleted: number }>
+// Performs full database sync
 
-### TopBar (`TopBar.tsx`)
-
-A component that displays the channel information and provides search and settings functionality.
-
-**Key Features:**
-- Channel name display with type indicator
-- Search input field
-- Notifications button
-- Settings menu integration
-
-**Props:**
-```typescript
-interface TopBarProps {
-  channelName: string | undefined
-  channelType: 'channel' | 'dm' | undefined
-  onThemeChange: (color: string) => void
-}
-```
-
-**Integration:**
-- Uses UI components from `ui/` directory
-- Integrates with `SettingsMenu` component
-- Implements Lucide icons
-
-### JoinWorkspaceDialog (`JoinWorkspaceDialog.tsx`)
-
-A dialog component that handles workspace creation and joining functionality.
-
-**Key Features:**
-- Create new workspace button
-- Join existing workspace dialog
-- Error handling
-- Loading states
-- Workspace ID validation
-
-**Props:**
-```typescript
-interface JoinWorkspaceDialogProps {
-  onCreateWorkspaceClick: () => void
-}
-```
-
-**API Integration:**
-- POST `/api/workspaces/${workspaceId}/join`
-  - Handles workspace joining
-  - Returns workspace data or error
-
-**Key Functions:**
-- `handleJoinWorkspace`: Processes workspace join requests
-- Error state management
-- Navigation after successful join
-
-### SettingsMenu (`SettingsMenu.tsx`)
-
-A dropdown menu component that provides theme customization and user settings.
-
-**Key Features:**
-- Theme color selection
-- Sign out functionality
-- Dropdown menu interface
-- Color preview swatches
-
-**Props:**
-```typescript
-interface SettingsMenuProps {
-  onThemeChange: (color: string) => void
-}
-```
-
-**Theme Options:**
-```typescript
-const themeColors = [
-  '#1a202c', // Dark Blue Gray
-  '#2d3748', // Darker Blue Gray
-  '#2C3E50', // Midnight Blue
-  '#34495E', // Wet Asphalt
-  '#4A5568', // Gray
-]
-```
-
-**Integration:**
-- Uses NextAuth for sign out functionality
-- Implements UI components from `ui/` directory
-- Uses Lucide icons
-
-### UserAvatar (`UserAvatar.tsx`)
-
-A reusable component for displaying user avatars with fallback.
-
-**Key Features:**
-- Image display with fallback icon
-- Customizable size
-- Rounded design with border
-- Responsive scaling
-
-**Props:**
-```typescript
-interface UserAvatarProps {
-  src?: string
-  alt: string
-  size?: number
-}
-```
-
-**Implementation Details:**
-- Uses Next.js `Image` component for optimized image loading
-- Implements Lucide `User` icon as fallback
-- Supports dynamic sizing
-- Maintains aspect ratio
-- Includes subtle border shadow for visual definition
-
-## UI Components Directory
-
-The `ui/` directory contains reusable UI components used throughout the application:
-
-- `button`: Button component with various styles and variants
-- `input`: Input field component
-- `dialog`: Modal dialog components
-- `dropdown-menu`: Dropdown menu components
-- `popover`: Popover components
-
-These components serve as the building blocks for the main components and provide consistent styling and behavior across the application.
-
-## API Integration
-
-Many components interact with the application's API endpoints:
-
-1. Authentication:
-   - `/api/auth/login`
-   - `/api/auth/register`
-
-2. Workspace Management:
-   - `/api/workspaces/${workspaceId}/join`
-   - `/api/workspaces/${workspaceId}/status`
-
-3. Messaging:
-   - `/api/messages/${messageId}`
-   - `/api/messages/${messageId}/thread`
-
-4. Search:
-   - `/api/channels/${channelId}/search`
-
-## State Management
-
-The application uses various state management approaches:
-
-1. Local State:
-   - React's `useState` for component-level state
-   - `useRef` for DOM references and persisted values
-
-2. Session Management:
-   - NextAuth for authentication state
-   - Workspace context for shared workspace data
-
-3. Custom Hooks:
-   - `useDebounce` for search optimization
-   - `useWorkspace` for workspace context access
-
-## Event Handling
-
-Components implement various event handlers for user interactions:
-
-1. User Actions:
-   - Message sending
-   - Channel selection
-   - Search functionality
-   - Theme changes
-
-2. UI Interactions:
-   - Sidebar resizing
-   - Section collapsing
-   - Dialog opening/closing
-   - Dropdown menu interactions
-
-## Styling
-
-The application uses:
-- Tailwind CSS for styling
-- Custom CSS for specific components
-- Responsive design principles
-- Consistent theme implementation 
+async function incrementalSync(lastSyncTime: Date): Promise<{
+  vectorized: number
+  deleted: number
+}>
+// Performs incremental sync from last sync time
+``` 

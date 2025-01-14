@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { authOptions } from '../../../auth/[...nextauth]/options'
 import { prisma } from '@/app/lib/prisma'
 import { notifyChannelClients } from '../events/options'
+import { syncMessagesToPinecone } from '@/lib/sync'
 
 export async function GET(
   request: Request,
@@ -154,6 +155,11 @@ export async function POST(
           }
         },
         attachments: true,
+        channel: {
+          select: {
+            workspaceId: true
+          }
+        },
         _count: {
           select: {
             threadReplies: true
@@ -161,6 +167,13 @@ export async function POST(
         }
       }
     })
+
+    // Sync the new message to Pinecone asynchronously
+    syncMessagesToPinecone([message])
+      .catch(error => {
+        console.error('Background Pinecone sync failed:', error)
+        // The error is logged but won't affect the message sending
+      })
 
     // Transform the message to include thread information
     const transformedMessage = {
