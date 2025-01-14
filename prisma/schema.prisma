@@ -115,6 +115,7 @@ model Message {
   attachments Attachment[]
   deleted     Boolean      @default(false)
   deletedAt   DateTime?
+  isAiResponse Boolean     @default(false)
   
   // Thread fields
   thread      Thread?      @relation("ThreadRoot")

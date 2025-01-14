@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Send, Paperclip, MessageSquare } from 'lucide-react'
+import { Send, Paperclip, MessageSquare, Bot, BotOff } from 'lucide-react'
 import { UserAvatar } from './UserAvatar'
 import { useSession } from 'next-auth/react'
 import {
@@ -169,6 +169,7 @@ export function MessageArea({
   const pendingScrollToMessageId = useRef<string | null>(null)
   const [pendingThreadScroll, setPendingThreadScroll] = useState<string | null>(null)
   const sseConnectionRef = useRef<EventSource | null>(null)
+  const [isAiEnabled, setIsAiEnabled] = useState(false)
 
   // Add effect to handle channel changes
   useEffect(() => {
@@ -553,52 +554,113 @@ export function MessageArea({
 
   const handleSendMessage = async () => {
     if (status !== 'authenticated' || !channelId) return;
-    
+
     const messageContent = newMessage.trim();
     if ((!messageContent && stagedAttachments.length === 0)) return;
 
-      try {
+    try {
       setError(null);
+      
+      if (isAiEnabled && messageContent) {
+        setIsLoading(true);
+        try {
+          // First send the user's message
+          const userMessageRes = await fetch(`/api/channels/${channelId}/messages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              content: messageContent,
+              attachments: stagedAttachments,
+            }),
+          });
+
+          if (!userMessageRes.ok) {
+            throw new Error('Failed to send message');
+          }
+
+          // Then get and send the AI response
+          const aiResponse = await fetch(`/api/channels/${channelId}/rag`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ message: messageContent }),
+          });
+
+          if (!aiResponse.ok) {
+            const errorData = await aiResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to get AI response');
+          }
+
+          const aiData = await aiResponse.json();
+          
+          // Send AI's response as a new message
+          const aiMessageRes = await fetch(`/api/channels/${channelId}/messages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              content: aiData.response,
+              isAiResponse: true,
+            }),
+          });
+
+          if (!aiMessageRes.ok) {
+            throw new Error('Failed to send AI response');
+          }
+
+          // Clear input and scroll
+          setNewMessage('');
+          setStagedAttachments([]);
+          if (messageContainerRef.current) {
+            messageContainerRef.current.scrollTo({
+              top: messageContainerRef.current.scrollHeight,
+              behavior: 'smooth'
+            });
+          }
+        } catch (error) {
+          console.error('Error in AI flow:', error);
+          setError(error instanceof Error ? error.message : 'Failed to process AI response');
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        // Regular message sending
         const res = await fetch(`/api/channels/${channelId}/messages`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-          content: messageContent,
+            content: messageContent,
             attachments: stagedAttachments,
           }),
-      });
-
-      const data = await res.json();
+        });
 
         if (!res.ok) {
-        throw new Error(data.error || 'Failed to send message');
+          const data = await res.json();
+          throw new Error(data.error || 'Failed to send message');
+        }
+
+        // Clear input fields
+        setNewMessage('');
+        setStagedAttachments([]);
+        
+        // Scroll to bottom
+        if (messageContainerRef.current) {
+          messageContainerRef.current.scrollTo({
+            top: messageContainerRef.current.scrollHeight,
+            behavior: 'smooth'
+          });
+        }
       }
-
-      // Clear input fields immediately for better UX
-      setNewMessage('');
-      setStagedAttachments([]);
-
-      // Add message to state immediately for optimistic update
-      setMessages(prev => {
-        if (prev.some(m => m.id === data.id)) return prev;
-        return [...prev, data].sort((a, b) => 
-          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
-      });
-
-      // Scroll to bottom
-      if (messageContainerRef.current) {
-        messageContainerRef.current.scrollTo({
-          top: messageContainerRef.current.scrollHeight,
-              behavior: 'smooth'
-        });
-      }
-      } catch (err) {
+    } catch (err) {
       console.error('Error sending message:', err);
       setError(err instanceof Error ? err.message : 'Failed to send message');
-      }
+    }
   };
 
   const handleAddReaction = async (messageId: string, emoji: { native: string }) => {
@@ -1291,35 +1353,49 @@ export function MessageArea({
           )}
           
           <div className="flex items-center space-x-2">
-            <Input
+            <button
+              onClick={() => setIsAiEnabled(!isAiEnabled)}
+              className={`p-2 rounded-md mr-2 ${
+                isAiEnabled 
+                  ? 'bg-blue-100 text-blue-600 hover:bg-blue-200' 
+                  : 'hover:bg-gray-100'
+              }`}
+              title={isAiEnabled ? 'Disable AI responses' : 'Enable AI responses'}
+              disabled={!channelId}
+            >
+              {isAiEnabled ? (
+                <Bot className="w-5 h-5" />
+              ) : (
+                <BotOff className="w-5 h-5" />
+              )}
+            </button>
+            
+            <input
               type="text"
-              placeholder={stagedAttachments.length > 0 ? "Add a message or send files..." : "Type a message..."}
+              placeholder={isLoading ? 'Getting AI response...' : 'Type a message...'}
+              className="flex-1 px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={!channelId || isLoading}
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-              disabled={!channelId}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
               ref={inputRef}
             />
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              className="hidden"
-              multiple
-            />
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              disabled={!channelId}
-              onClick={() => fileInputRef.current?.click()}
+
+            <Button
+              onClick={handleSendMessage}
+              disabled={!channelId || isLoading || (!newMessage.trim() && stagedAttachments.length === 0)}
+              className="px-4 py-2"
             >
-              <Paperclip className="h-5 w-5" />
-            </Button>
-            <Button 
-              onClick={handleSendMessage} 
-              disabled={!channelId || (newMessage.trim() === '' && stagedAttachments.length === 0)}
-            >
-              <Send className="h-5 w-5" />
+              {isLoading ? (
+                <div className="w-5 h-5 animate-spin rounded-full border-2 border-gray-300 border-t-white" />
+              ) : (
+                <Send className="w-5 h-5" />
+              )}
             </Button>
           </div>
           {/* Upload progress indicators */}
