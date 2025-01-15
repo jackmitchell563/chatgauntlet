@@ -1,0 +1,2 @@
+- sidebar defaults alphabetical reodering
+- swapping between channels says "getting ai response" and sometimes it gets stuck and the user can't send messages

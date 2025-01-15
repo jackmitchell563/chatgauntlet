@@ -170,6 +170,7 @@ export function MessageArea({
   const [pendingThreadScroll, setPendingThreadScroll] = useState<string | null>(null)
   const sseConnectionRef = useRef<EventSource | null>(null)
   const [isAiEnabled, setIsAiEnabled] = useState(false)
+  const optimisticMessageIdsRef = useRef<Set<string>>(new Set())
 
   // Add effect to handle channel changes
   useEffect(() => {
@@ -225,7 +226,21 @@ export function MessageArea({
         switch (data.type) {
           case 'NEW_MESSAGE':
             setMessages(prev => {
-              // Only add if message doesn't exist
+              // Find any optimistic message that matches this real message
+              const optimisticMessage = prev.find(msg => 
+                msg.id.startsWith('temp-') && 
+                msg.content === data.message.content &&
+                msg.user.id === data.message.user.id &&
+                // Compare timestamps within a 10 second window
+                Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 10000
+              );
+
+              // If we found a matching optimistic message, skip this update
+              if (optimisticMessage) {
+                return prev;
+              }
+
+              // Otherwise, add the new message
               if (!prev.find(m => m.id === data.message.id)) {
                 const newMessages = [...prev, data.message].sort((a, b) => 
                   new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
@@ -558,8 +573,42 @@ export function MessageArea({
     const messageContent = newMessage.trim();
     if ((!messageContent && stagedAttachments.length === 0)) return;
 
+    const optimisticMessage: Message = {
+      id: `temp-${Date.now()}`, // Temporary ID
+      content: messageContent,
+      createdAt: new Date().toISOString(),
+      user: {
+        id: session?.user?.id!,
+        name: session?.user?.name ?? null,
+        image: session?.user?.image ?? null,
+      },
+      reactions: [],
+      attachments: stagedAttachments.map(att => ({
+        ...att,
+        id: `temp-${Date.now()}-${att.name}` // Add temporary ID
+      }))
+    };
+
     try {
       setError(null);
+      
+      // Track the optimistic message ID immediately
+      optimisticMessageIdsRef.current.add(optimisticMessage.id);
+      
+      // Add optimistic message to UI immediately
+      setMessages(prev => [...prev, optimisticMessage]);
+      
+      // Clear input fields immediately
+      setNewMessage('');
+      setStagedAttachments([]);
+      
+      // Scroll to bottom
+      if (messageContainerRef.current) {
+        messageContainerRef.current.scrollTo({
+          top: messageContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
       
       if (isAiEnabled && messageContent) {
         setIsLoading(true);
@@ -579,6 +628,17 @@ export function MessageArea({
           if (!userMessageRes.ok) {
             throw new Error('Failed to send message');
           }
+
+          // Get the real message
+          const realMessage = await userMessageRes.json();
+          
+          // Replace optimistic message with real one and update tracking
+          optimisticMessageIdsRef.current.delete(optimisticMessage.id);
+          optimisticMessageIdsRef.current.add(realMessage.id);
+          
+          setMessages(prev => 
+            prev.map(msg => msg.id === optimisticMessage.id ? realMessage : msg)
+          );
 
           // Then get and send the AI response
           const aiResponse = await fetch(`/api/channels/${channelId}/rag`, {
@@ -612,54 +672,56 @@ export function MessageArea({
             throw new Error('Failed to send AI response');
           }
 
-          // Clear input and scroll
-          setNewMessage('');
-          setStagedAttachments([]);
-          if (messageContainerRef.current) {
-            messageContainerRef.current.scrollTo({
-              top: messageContainerRef.current.scrollHeight,
-              behavior: 'smooth'
-            });
-          }
         } catch (error) {
           console.error('Error in AI flow:', error);
           setError(error instanceof Error ? error.message : 'Failed to process AI response');
+          
+          // Remove optimistic message on error
+          setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
         } finally {
           setIsLoading(false);
         }
       } else {
         // Regular message sending
-        const res = await fetch(`/api/channels/${channelId}/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            content: messageContent,
-            attachments: stagedAttachments,
-          }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || 'Failed to send message');
-        }
-
-        // Clear input fields
-        setNewMessage('');
-        setStagedAttachments([]);
-        
-        // Scroll to bottom
-        if (messageContainerRef.current) {
-          messageContainerRef.current.scrollTo({
-            top: messageContainerRef.current.scrollHeight,
-            behavior: 'smooth'
+        try {
+          const res = await fetch(`/api/channels/${channelId}/messages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              content: messageContent,
+              attachments: stagedAttachments,
+            }),
           });
+
+          if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.error || 'Failed to send message');
+          }
+
+          // Get the real message and track its ID
+          const realMessage = await res.json();
+          optimisticMessageIdsRef.current.add(realMessage.id);
+          
+          // Replace optimistic message with real one
+          setMessages(prev => 
+            prev.map(msg => msg.id === optimisticMessage.id ? realMessage : msg)
+          );
+        } catch (error) {
+          console.error('Error sending message:', error);
+          setError(error instanceof Error ? error.message : 'Failed to send message');
+          
+          // Remove optimistic message on error
+          setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
         }
       }
-    } catch (err) {
-      console.error('Error sending message:', err);
-      setError(err instanceof Error ? err.message : 'Failed to send message');
+    } catch (error) {
+      console.error('Error in message flow:', error);
+      setError(error instanceof Error ? error.message : 'Failed to process message');
+      
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
     }
   };
 

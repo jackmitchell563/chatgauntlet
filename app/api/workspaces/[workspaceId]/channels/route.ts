@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '../../../auth/[...nextauth]/options'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { notifyWorkspaceClients } from '../events/options'
 
 const createChannelSchema = z.object({
   name: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, {
@@ -49,6 +50,12 @@ export async function POST(
         type: 'PUBLIC',
         workspaceId: params.workspaceId
       }
+    })
+
+    // Notify all workspace clients about the new channel
+    notifyWorkspaceClients(params.workspaceId, {
+      type: 'CHANNEL_CREATED',
+      channel
     })
 
     return NextResponse.json(channel)

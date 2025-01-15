@@ -105,6 +105,7 @@ export function ThreadView({
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
   const [openEmojiPickerId, setOpenEmojiPickerId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const optimisticMessageIdsRef = useRef<Set<string>>(new Set())
 
   // Update root message when prop changes
   useEffect(() => {
@@ -140,9 +141,24 @@ export function ThreadView({
         switch (data.type) {
           case 'THREAD_MESSAGE_ADDED':
             setMessages(prev => {
-              // Only add if message doesn't exist
-              const messageExists = prev.some(m => m.id === data.message.id);
-              if (!messageExists) {
+              // Find any optimistic message that matches this real message
+              const optimisticMessage = prev.find(msg => 
+                msg.id.startsWith('temp-') && 
+                msg.content === data.message.content &&
+                msg.user.id === data.message.user.id &&
+                // Compare timestamps within a 10 second window
+                Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 10000
+              );
+
+              // If we found a matching optimistic message, replace it
+              if (optimisticMessage) {
+                return prev.map(msg => 
+                  msg.id === optimisticMessage.id ? data.message : msg
+                );
+              }
+
+              // Otherwise add the new message
+              if (!prev.find(m => m.id === data.message.id)) {
                 const newMessages = [...prev, data.message].sort((a, b) => 
                   new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
                 );
@@ -324,11 +340,39 @@ export function ThreadView({
   }, [pendingScrollToMessageId, onScrollComplete])
 
   const handleSendMessage = () => {
-    if (newMessage.trim()) {
-      console.log('Sending thread message:', newMessage.trim())
-      onSendMessage(newMessage.trim())
-      setNewMessage('')
+    if (!newMessage.trim() || !session?.user) return;
+
+    const messageContent = newMessage.trim();
+    
+    // Create optimistic message
+    const optimisticMessage: ThreadMessage = {
+      id: `temp-${Date.now()}`,
+      content: messageContent,
+      createdAt: new Date().toISOString(),
+      user: {
+        id: session.user.id,
+        name: session.user.name ?? null,
+        image: session.user.image ?? null,
+      },
+      reactions: []
+    };
+
+    // Add optimistic message to UI immediately
+    setMessages(prev => [...prev, optimisticMessage]);
+    
+    // Clear input field
+    setNewMessage('');
+    
+    // Scroll to bottom
+    if (messageContainerRef.current) {
+      messageContainerRef.current.scrollTo({
+        top: messageContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
+
+    // Send message to server
+    onSendMessage(messageContent);
   }
 
   const formatTime = (dateString: string) => {

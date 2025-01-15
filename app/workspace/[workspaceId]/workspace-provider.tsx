@@ -97,6 +97,13 @@ export function WorkspaceProvider({
       const data = JSON.parse(event.data)
       
       switch (data.type) {
+        case 'CHANNEL_CREATED':
+          setWorkspace(prev => ({
+            ...prev,
+            channels: [...prev.channels, data.channel]
+          }))
+          break
+
         case 'CHANNEL_UPDATED':
           setWorkspace(prev => ({
             ...prev,
