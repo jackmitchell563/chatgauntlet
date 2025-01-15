@@ -144,6 +144,7 @@ export function MessageArea({
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   });
   const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
   const [activeThread, setActiveThread] = useState<ThreadState | null>(null)
@@ -178,6 +179,8 @@ export function MessageArea({
       console.log('Channel changed, resetting state');
       setMessages([]); // Reset messages when channel changes
       setError(null);
+      setIsLoading(false); // Reset AI loading state
+      setIsLoadingMessages(false); // Reset message loading state
       lastChannelIdRef.current = channelId;
       initialFetchRef.current = false;
       shouldScrollRef.current = true; // This will trigger scroll to bottom after messages load
@@ -200,266 +203,222 @@ export function MessageArea({
     let retryCount = 0;
     const maxRetries = 3;
     let isMounted = true;
+    let currentController: AbortController | null = null;
     
-    // Set up SSE connection immediately
-    const setupSSE = () => {
-      if (!isMounted) return;
-      
-      console.log('Setting up SSE connection for channel:', channelId);
-      eventSource = new EventSource(`/api/channels/${channelId}/events`);
-
-      eventSource.onopen = () => {
-        console.log('SSE connection opened for channel:', channelId);
-        retryCount = 0;
-        // Fetch messages after SSE connection is established
-        if (!initialFetchRef.current) {
-          fetchInitialMessages();
-        }
-      };
-
-      eventSource.onmessage = (event) => {
-        if (!isMounted) return;
-        
-        const data = JSON.parse(event.data);
-        console.log('Channel SSE event received:', data);
-
-        switch (data.type) {
-          case 'NEW_MESSAGE':
-            setMessages(prev => {
-              // Find any optimistic message that matches this real message
-              const optimisticMessage = prev.find(msg => 
-                msg.id.startsWith('temp-') && 
-                msg.content === data.message.content &&
-                msg.user.id === data.message.user.id &&
-                // Compare timestamps within a 10 second window
-                Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 10000
-              );
-
-              // If we found a matching optimistic message, skip this update
-              if (optimisticMessage) {
-                return prev;
-              }
-
-              // Otherwise, add the new message
-              if (!prev.find(m => m.id === data.message.id)) {
-                const newMessages = [...prev, data.message].sort((a, b) => 
-                  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-                );
-
-                // Check if we should auto-scroll
-                if (messageContainerRef.current) {
-                  const container = messageContainerRef.current;
-                  const threshold = 150; // pixels from bottom
-                  const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
-                  
-                  if (distanceFromBottom <= threshold) {
-                    requestAnimationFrame(() => {
-                      container.scrollTo({
-                        top: container.scrollHeight,
-                        behavior: 'smooth'
-                      });
-                    });
-                  }
-                }
-
-                return newMessages;
-              }
-              return prev;
-            });
-            break;
-
-          case 'MESSAGE_UPDATED':
-            setMessages(prev => prev.map(msg =>
-              msg.id === data.message.id ? data.message : msg
-            ));
-            break;
-
-          case 'MESSAGE_DELETED':
-            setMessages(prev => prev.filter(msg => msg.id !== data.messageId));
-            break;
-
-          case 'REACTION_ADDED':
-          case 'REACTION_REMOVED':
-            console.log('MessageArea: Reaction event received:', {
-              type: data.type,
-              messageId: data.messageId,
-              reactions: data.reactions,
-              currentMessages: messages
-            });
-            
-            // Force a new reference for the updated message to trigger re-render
-            setMessages(prev => {
-              const messageToUpdate = prev.find(msg => msg.id === data.messageId);
-              if (!messageToUpdate) return prev;
-              
-              return prev.map(msg =>
-                msg.id === data.messageId
-                  ? { ...messageToUpdate, reactions: [...data.reactions] }
-                  : msg
-              );
-            });
-
-            // Update thread state if needed
-            if (activeThread && (activeThread.rootMessage.id === data.messageId)) {
-              console.log('MessageArea: Updating thread root message reactions');
-              setActiveThread(prev => {
-                if (!prev) return null;
-                return {
-                  ...prev,
-                  rootMessage: {
-                    ...prev.rootMessage,
-                    reactions: [...data.reactions]
-                  }
-                };
-              });
-            }
-            break;
-
-          case 'THREAD_MESSAGE_ADDED':
-            // Update the thread count in the main message list using the message data directly
-            setMessages(prev => prev.map(msg =>
-              msg.id === data.message.parentMessageId
-                ? {
-                    ...msg,
-                    thread: {
-                      id: msg.id,
-                      messageCount: data.messages.length,
-                      lastMessage: data.message
-                    }
-                  }
-                : msg
-            ));
-
-            // Update thread messages if this is the current thread
-            if (activeThread?.rootMessage.id === data.message.parentMessageId) {
-              setThreadMessages(prev => ({
-                ...prev,
-                [data.message.parentMessageId]: data.messages
-              }));
-
-              setActiveThread(prev => prev ? {
-                ...prev,
-                messages: data.messages
-              } : null);
-            }
-            break;
-
-          case 'THREAD_UPDATED':
-            setMessages(prev => prev.map(msg =>
-              msg.id === data.threadId
-                ? {
-                    ...msg,
-                    thread: {
-                      id: data.threadId,
-                      messageCount: data.messageCount
-                    }
-                  }
-                : msg
-            ));
-            
-            // Also update threadMessages state to stay in sync
-            setThreadMessages(prev => ({
-              ...prev,
-              [data.threadId]: data.messages
-            }));
-            
-            // Update active thread if this is the current thread
-            if (activeThread?.rootMessage.id === data.threadId) {
-              setActiveThread(prev => prev ? {
-                ...prev,
-                messages: data.messages
-              } : null);
-            }
-            break;
-        }
-      };
-
-      eventSource.onerror = (error) => {
-        console.error('SSE connection error:', error);
-        if (eventSource) {
-          eventSource.close();
-          eventSource = null;
-        }
-        
-        if (!isMounted) return;
-        
-        // Attempt to reconnect with exponential backoff
-        if (retryCount < maxRetries) {
-          const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
-          retryCount++;
-          console.log(`Attempting to reconnect SSE (attempt ${retryCount}/${maxRetries}) after ${delay}ms`);
-          setTimeout(setupSSE, delay);
-        } else {
-          console.error('Max SSE reconnection attempts reached');
-          setError('Lost connection to server. Please refresh the page.');
-        }
-      };
-    };
-
-    // Start SSE connection immediately
-    setupSSE();
-
     const fetchInitialMessages = async () => {
-      if (!isMounted) return;
+      // If we're already fetching, abort the previous fetch
+      if (currentController) {
+        currentController.abort();
+      }
+      
+      // Don't fetch if we've already fetched for this channel
+      if (!channelId || initialFetchRef.current) return;
+      
+      // Create new controller for this fetch
+      currentController = new AbortController();
+      setIsLoadingMessages(true);
       
       try {
-        setIsLoading(true);
-        setError(null);
+        const res = await fetch(`/api/channels/${channelId}/messages`, {
+          signal: currentController.signal
+        });
         
-        console.log('Fetching messages for channel:', channelId);
-        const res = await fetch(`/api/channels/${channelId}/messages`);
+        // Check if we're still on the same channel before proceeding
+        if (channelId !== lastChannelIdRef.current) {
+          return;
+        }
         
         if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          throw new Error(errorData.error || `Failed to fetch messages: ${res.status}`);
+          throw new Error('Failed to fetch messages');
         }
         
         const data = await res.json();
-        console.log('Received messages:', data);
         
-        if (!Array.isArray(data)) {
-          throw new Error('Invalid response format from server');
-        }
-        
-        // Filter out thread messages and sort by creation time
-        const mainMessages = data
-          .filter((msg: Message) => !msg.parentMessageId)
-          .sort((a: Message, b: Message) => 
-            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-          );
-        
-        if (isMounted) {
-          setMessages(mainMessages);
-          
-          // Scroll to bottom on initial load if needed
-          if (shouldScrollRef.current && messageContainerRef.current) {
-            messageContainerRef.current.scrollTo({
-              top: messageContainerRef.current.scrollHeight,
-              behavior: 'instant'
-            });
-            shouldScrollRef.current = false;
-          }
-          
+        // Only update state if we're still on the same channel
+        if (channelId === lastChannelIdRef.current) {
+          setMessages(data.filter((msg: Message) => !msg.parentMessageId));
           initialFetchRef.current = true;
+          setIsLoadingMessages(false);
         }
       } catch (error) {
-        console.error('Error fetching messages:', error);
-        if (isMounted) {
-          setError(error instanceof Error ? error.message : 'Failed to load messages');
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
+        // Only set error if it's not an abort error and we're still on the same channel
+        if (!(error instanceof DOMException && error.name === 'AbortError') && channelId === lastChannelIdRef.current) {
+          console.error('Error fetching messages:', error);
+          setError(error instanceof Error ? error.message : 'Failed to fetch messages');
+          setIsLoadingMessages(false);
         }
       }
     };
 
-    // Start the process
-    fetchInitialMessages().then(() => {
-      if (isMounted) {
-        setupSSE();
+    // Start by fetching messages
+    fetchInitialMessages();
+    
+    // Then set up SSE connection
+    console.log('Setting up SSE connection for channel:', channelId);
+    eventSource = new EventSource(`/api/channels/${channelId}/events`);
+
+    eventSource.onopen = () => {
+      console.log('SSE connection opened for channel:', channelId);
+      retryCount = 0;
+    };
+
+    eventSource.onmessage = (event) => {
+      if (!isMounted) return;
+      
+      const data = JSON.parse(event.data);
+      console.log('Channel SSE event received:', data);
+
+      switch (data.type) {
+        case 'NEW_MESSAGE':
+          setMessages(prev => {
+            // Find any optimistic message that matches this real message
+            const optimisticMessage = prev.find(msg => 
+              msg.id.startsWith('temp-') && 
+              msg.content === data.message.content &&
+              msg.user.id === data.message.user.id &&
+              Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 10000
+            );
+
+            if (optimisticMessage) return prev;
+
+            if (!prev.find(m => m.id === data.message.id)) {
+              const newMessages = [...prev, data.message].sort((a, b) => 
+                new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+              );
+
+              if (messageContainerRef.current) {
+                const container = messageContainerRef.current;
+                const threshold = 150;
+                const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
+                
+                if (distanceFromBottom <= threshold) {
+                  requestAnimationFrame(() => {
+                    container.scrollTo({
+                      top: container.scrollHeight,
+                      behavior: 'smooth'
+                    });
+                  });
+                }
+              }
+
+              return newMessages;
+            }
+            return prev;
+          });
+          break;
+
+        case 'MESSAGE_UPDATED':
+          setMessages(prev => prev.map(msg =>
+            msg.id === data.message.id ? data.message : msg
+          ));
+          break;
+
+        case 'MESSAGE_DELETED':
+          setMessages(prev => prev.filter(msg => msg.id !== data.messageId));
+          break;
+
+        case 'REACTION_ADDED':
+        case 'REACTION_REMOVED':
+          setMessages(prev => {
+            const messageToUpdate = prev.find(msg => msg.id === data.messageId);
+            if (!messageToUpdate) return prev;
+            
+            return prev.map(msg =>
+              msg.id === data.messageId
+                ? { ...messageToUpdate, reactions: [...data.reactions] }
+                : msg
+            );
+          });
+
+          if (activeThread?.rootMessage.id === data.messageId) {
+            setActiveThread(prev => prev ? {
+              ...prev,
+              rootMessage: {
+                ...prev.rootMessage,
+                reactions: [...data.reactions]
+              }
+            } : null);
+          }
+          break;
+
+        case 'THREAD_MESSAGE_ADDED':
+          setMessages(prev => prev.map(msg =>
+            msg.id === data.message.parentMessageId
+              ? {
+                  ...msg,
+                  thread: {
+                    id: msg.id,
+                    messageCount: data.messages.length,
+                    lastMessage: data.message
+                  }
+                }
+              : msg
+          ));
+
+          if (activeThread?.rootMessage.id === data.message.parentMessageId) {
+            setThreadMessages(prev => ({
+              ...prev,
+              [data.message.parentMessageId]: data.messages
+            }));
+
+            setActiveThread(prev => prev ? {
+              ...prev,
+              messages: data.messages
+            } : null);
+          }
+          break;
+
+        case 'THREAD_UPDATED':
+          setMessages(prev => prev.map(msg =>
+            msg.id === data.threadId
+              ? {
+                  ...msg,
+                  thread: {
+                    id: data.threadId,
+                    messageCount: data.messageCount
+                  }
+                }
+              : msg
+          ));
+          
+          setThreadMessages(prev => ({
+            ...prev,
+            [data.threadId]: data.messages
+          }));
+          
+          if (activeThread?.rootMessage.id === data.threadId) {
+            setActiveThread(prev => prev ? {
+              ...prev,
+              messages: data.messages
+            } : null);
+          }
+          break;
       }
-    });
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('SSE connection error:', error);
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      
+      if (!isMounted) return;
+      
+      if (retryCount < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+        retryCount++;
+        console.log(`Attempting to reconnect SSE (attempt ${retryCount}/${maxRetries}) after ${delay}ms`);
+        setTimeout(() => {
+          if (isMounted) {
+            eventSource = new EventSource(`/api/channels/${channelId}/events`);
+          }
+        }, delay);
+      } else {
+        console.error('Max SSE reconnection attempts reached');
+        setError('Lost connection to server. Please refresh the page.');
+      }
+    };
 
     // Cleanup
     return () => {
@@ -469,8 +428,12 @@ export function MessageArea({
         eventSource.close();
         eventSource = null;
       }
+      if (currentController) {
+        currentController.abort();
+        currentController = null;
+      }
     };
-  }, [channelId, status, session?.user?.id]);
+  }, [channelId, status, session?.user?.id, activeThread]);
 
   const isNearBottom = () => {
     if (!messageContainerRef.current) return false
@@ -1434,7 +1397,7 @@ export function MessageArea({
             
             <input
               type="text"
-              placeholder={isLoading ? 'Getting AI response...' : 'Type a message...'}
+              placeholder={isLoading ? 'Getting AI response...' : isLoadingMessages ? 'Loading messages...' : 'Type a message...'}
               className="flex-1 px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={!channelId || isLoading}
               value={newMessage}
