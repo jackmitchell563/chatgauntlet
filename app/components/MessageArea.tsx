@@ -51,6 +51,7 @@ interface Message {
     url: string
     size: number
   }[]
+  isAiResponse?: boolean
 }
 
 interface ThreadState {
@@ -369,17 +370,33 @@ export function MessageArea({
           break;
 
         case 'THREAD_UPDATED':
-          setMessages(prev => prev.map(msg =>
-            msg.id === data.threadId
-              ? {
-                  ...msg,
-                  thread: {
-                    id: data.threadId,
-                    messageCount: data.messageCount
+          console.log('MessageArea: Received THREAD_UPDATED event:', {
+            threadId: data.threadId,
+            messageCount: data.messageCount,
+            currentMessage: messages.find(m => m.id === data.threadId)
+          });
+          setMessages(prev => {
+            const updatedMessages = prev.map(msg =>
+              msg.id === data.threadId
+                ? {
+                    ...msg,
+                    thread: {
+                      ...(msg.thread || {}),
+                      id: data.threadId,
+                      messageCount: data.messageCount
+                    }
                   }
-                }
-              : msg
-          ));
+                : msg
+            );
+            console.log('MessageArea: State update details:', {
+              threadId: data.threadId,
+              oldMessage: prev.find(m => m.id === data.threadId),
+              newMessage: updatedMessages.find(m => m.id === data.threadId),
+              messageCountChanged: prev.find(m => m.id === data.threadId)?.thread?.messageCount !== data.messageCount
+            });
+            return updatedMessages;
+          });
+          console.log('MessageArea: Updated message with new thread count');
           
           setThreadMessages(prev => ({
             ...prev,
@@ -872,7 +889,12 @@ export function MessageArea({
     }
   }
 
-  const handleSendThreadMessage = async (content: string) => {
+  const handleSendThreadMessage = async (content: string, isAiResponse?: boolean, attachments?: {
+    name: string;
+    type: string;
+    url: string;
+    size: number;
+  }[]) => {
     if (!activeThread?.rootMessage.id) return
 
     try {
@@ -881,7 +903,7 @@ export function MessageArea({
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, isAiResponse, attachments }),
       })
 
       if (!res.ok) {
@@ -1132,7 +1154,10 @@ export function MessageArea({
               <div className="pb-6">
                 {messages.reduce((acc, message, index) => {
                   const prevMessage = messages[index - 1];
-                  const isConsecutive = prevMessage && prevMessage.user.id === message.user.id;
+                  const isConsecutive = prevMessage && 
+                    prevMessage.user.id === message.user.id && 
+                    !message.isAiResponse && 
+                    !prevMessage.isAiResponse;
                   const currentDate = new Date(message.createdAt);
                   const prevDate = prevMessage ? new Date(prevMessage.createdAt) : null;
                   const isNewDay = !prevDate || 
@@ -1157,7 +1182,11 @@ export function MessageArea({
                     acc.push(
                       <div 
                         key={message.id} 
-                        className={`group relative flex w-full px-4 hover:bg-gray-100 ${
+                        className={`group relative flex w-full px-4 ${
+                          message.isAiResponse 
+                            ? 'bg-blue-50 hover:bg-blue-100' 
+                            : 'hover:bg-gray-100'
+                        } ${
                           index > 0 ? 'mt-3' : ''
                         }`}
                         onMouseEnter={() => setHoveredMessageId(message.id)}
@@ -1182,12 +1211,12 @@ export function MessageArea({
                         </div>
                         <div className="flex-grow min-w-0 max-w-full">
                           <div className="flex items-center h-6">
-                            <div className="font-semibold truncate leading-6">{message.user.name || 'Unknown User'}</div>
+                            <div className={`font-semibold truncate leading-6 ${message.isAiResponse ? 'text-blue-600' : ''}`}>{message.user.name || 'Unknown User'}</div>
                             <div className="text-xs text-gray-500 ml-2 flex-shrink-0 leading-6">
                               {new Date(message.createdAt).toLocaleTimeString()}
                             </div>
                           </div>
-                          <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px]">
+                          <div className={`break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px] ${message.isAiResponse ? 'text-blue-600' : ''}`}>
                             {message.content}
                             {message.attachments?.map(attachment => renderAttachment(attachment))}
                           </div>
@@ -1203,7 +1232,7 @@ export function MessageArea({
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>
-                                {`${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`}
+                                {`${threadMessages[message.id]?.length || message.thread?.messageCount || 0} ${(threadMessages[message.id]?.length || message.thread?.messageCount || 0) === 1 ? 'reply' : 'replies'}`}
                               </span>
                             </button>
                           )}
@@ -1249,7 +1278,11 @@ export function MessageArea({
                     acc.push(
                       <div 
                         key={message.id} 
-                        className="group relative flex w-full px-4 hover:bg-gray-100"
+                        className={`group relative flex w-full px-4 ${
+                          message.isAiResponse 
+                            ? 'bg-blue-50 hover:bg-blue-100' 
+                            : 'hover:bg-gray-100'
+                        }`}
                         onMouseEnter={() => setHoveredMessageId(message.id)}
                         onMouseLeave={() => setHoveredMessageId(null)}
                         data-message-id={message.id}
@@ -1268,7 +1301,7 @@ export function MessageArea({
                           </div>
                         </div>
                         <div className="flex-grow min-w-0 max-w-full">
-                          <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[10px] py-[2px]">
+                          <div className={`break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[10px] py-[2px] ${message.isAiResponse ? 'text-blue-600' : ''}`}>
                             {message.content}
                             {message.attachments?.map(attachment => renderAttachment(attachment))}
                           </div>
@@ -1284,7 +1317,7 @@ export function MessageArea({
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>
-                                {`${message.thread?.messageCount || 0} ${message.thread?.messageCount === 1 ? 'reply' : 'replies'}`}
+                                {`${threadMessages[message.id]?.length || message.thread?.messageCount || 0} ${(threadMessages[message.id]?.length || message.thread?.messageCount || 0) === 1 ? 'reply' : 'replies'}`}
                               </span>
                             </button>
                           )}
@@ -1398,8 +1431,8 @@ export function MessageArea({
             <input
               type="text"
               placeholder={isLoading ? 'Getting AI response...' : isLoadingMessages ? 'Loading messages...' : 'Type a message...'}
-              className="flex-1 px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={!channelId || isLoading}
+              className="flex-1 px-4 py-2 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
+              disabled={!channelId || isLoading || isLoadingMessages}
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={(e) => {
@@ -1410,6 +1443,24 @@ export function MessageArea({
               }}
               ref={inputRef}
             />
+
+            <input
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileSelect}
+              ref={fileInputRef}
+            />
+
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!channelId || isLoading || isLoadingMessages}
+              className="px-2"
+            >
+              <Paperclip className="h-5 w-5" />
+            </Button>
 
             <Button
               onClick={handleSendMessage}

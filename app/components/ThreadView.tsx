@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Send } from 'lucide-react'
+import { Send, MessageSquare, Bot, BotOff, Paperclip } from 'lucide-react'
 import { UserAvatar } from './UserAvatar'
 import { useSession } from 'next-auth/react'
 import { useWorkspace } from '@/app/workspace/[workspaceId]/workspace-provider'
@@ -11,7 +11,6 @@ import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import Image from 'next/image'
 import Picker from '@emoji-mart/react'
 import data from '@emoji-mart/data'
-import { MessageSquare } from 'lucide-react'
 
 interface ThreadMessage {
   id: string
@@ -30,13 +29,26 @@ interface ThreadMessage {
       name: string | null
     }
   }[]
+  isAiResponse?: boolean
+  attachments?: {
+    id: string
+    name: string
+    type: string
+    url: string
+    size: number
+  }[]
 }
 
 interface ThreadViewProps {
   rootMessage: ThreadMessage
   messages: ThreadMessage[]
   onClose: () => void
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, isAiResponse?: boolean, attachments?: {
+    name: string
+    type: string
+    url: string
+    size: number
+  }[]) => void
   onAddReaction: (messageId: string, emoji: { native: string }) => void
   openTimestamp: number
   pendingScrollToMessageId?: string | null
@@ -101,11 +113,21 @@ export function ThreadView({
   const [rootMessage, setRootMessage] = useState(initialRootMessage)
   const messageContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const { userStatuses } = useWorkspace()
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
   const [openEmojiPickerId, setOpenEmojiPickerId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const optimisticMessageIdsRef = useRef<Set<string>>(new Set())
+  const [isLoading, setIsLoading] = useState(false)
+  const [isAiEnabled, setIsAiEnabled] = useState(false)
+  const [uploadingFiles, setUploadingFiles] = useState<{ [key: string]: { progress: number; name: string } }>({})
+  const [stagedAttachments, setStagedAttachments] = useState<{
+    name: string;
+    type: string;
+    url: string;
+    size: number;
+  }[]>([])
 
   // Update root message when prop changes
   useEffect(() => {
@@ -339,8 +361,115 @@ export function ThreadView({
     }, 100)
   }, [pendingScrollToMessageId, onScrollComplete])
 
-  const handleSendMessage = () => {
-    if (!newMessage.trim() || !session?.user) return;
+  // Add file handling functions
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || !rootMessage.id) return
+
+    const filesArray = Array.from(files)
+    for (const file of filesArray) {
+      const fileId = crypto.randomUUID()
+      setUploadingFiles(prev => ({
+        ...prev,
+        [fileId]: { progress: 0, name: file.name }
+      }))
+
+      try {
+        // Get pre-signed URL
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type,
+            size: file.size,
+          }),
+        })
+
+        if (!response.ok) {
+          throw new Error('Failed to get upload URL')
+        }
+
+        const { uploadUrl, url } = await response.json()
+
+        // Upload file to S3
+        await fetch(uploadUrl, {
+          method: 'PUT',
+          body: file,
+          headers: {
+            'Content-Type': file.type,
+          },
+        })
+
+        // Add the uploaded file to staged attachments
+        setStagedAttachments(prev => [...prev, {
+          name: file.name,
+          type: file.type,
+          url: url,
+          size: file.size,
+        }])
+
+      } catch (error) {
+        console.error('Error uploading file:', error)
+        setError('Failed to upload file')
+      } finally {
+        setUploadingFiles(prev => {
+          const newState = { ...prev }
+          delete newState[fileId]
+          return newState
+        })
+      }
+    }
+
+    // Clear the file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const removeStagedAttachment = (index: number) => {
+    setStagedAttachments(prev => prev.filter((_, i) => i !== index))
+  }
+
+  const renderAttachment = (attachment: NonNullable<ThreadMessage['attachments']>[number]) => {
+    const isImage = attachment.type.startsWith('image/')
+    
+    return (
+      <div key={attachment.id} className="mt-2">
+        {isImage ? (
+          <div className="relative rounded-lg overflow-hidden max-w-lg">
+            <Image
+              src={attachment.url}
+              alt={attachment.name}
+              width={512}
+              height={384}
+              className="object-contain w-full h-auto"
+              style={{ maxHeight: '384px' }}
+            />
+          </div>
+        ) : (
+          <a
+            href={attachment.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center p-2 space-x-2 border rounded-lg hover:bg-gray-50 transition-colors max-w-sm"
+          >
+            <Paperclip className="w-4 h-4 text-gray-500" />
+            <span className="flex-1 truncate">{attachment.name}</span>
+            <span className="text-sm text-gray-500">
+              {(attachment.size / 1024).toFixed(1)}KB
+            </span>
+          </a>
+        )}
+      </div>
+    )
+  }
+
+  // Update handleSendMessage to include attachments
+  const handleSendMessage = async () => {
+    if (!newMessage.trim() && stagedAttachments.length === 0 || !session?.user) return;
 
     const messageContent = newMessage.trim();
     
@@ -354,26 +483,88 @@ export function ThreadView({
         name: session.user.name ?? null,
         image: session.user.image ?? null,
       },
-      reactions: []
+      reactions: [],
+      attachments: stagedAttachments.map(att => ({
+        ...att,
+        id: `temp-${Date.now()}-${att.name}`
+      }))
     };
 
-    // Add optimistic message to UI immediately
-    setMessages(prev => [...prev, optimisticMessage]);
-    
-    // Clear input field
-    setNewMessage('');
-    
-    // Scroll to bottom
-    if (messageContainerRef.current) {
-      messageContainerRef.current.scrollTo({
-        top: messageContainerRef.current.scrollHeight,
-        behavior: 'smooth'
-      });
-    }
+    try {
+      setError(null);
+      
+      // Add optimistic message to UI immediately
+      setMessages(prev => [...prev, optimisticMessage]);
+      
+      // Clear input field and attachments
+      setNewMessage('');
+      setStagedAttachments([]);
+      
+      // Scroll to bottom
+      if (messageContainerRef.current) {
+        messageContainerRef.current.scrollTo({
+          top: messageContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+      
+      if (isAiEnabled && messageContent) {
+        setIsLoading(true);
+        try {
+          // First send the user's message (without isAiResponse)
+          await onSendMessage(messageContent, false);
 
-    // Send message to server
-    onSendMessage(messageContent);
-  }
+          // Then get the AI response
+          const aiResponse = await fetch(`/api/channels/${rootMessage.id}/rag`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              message: messageContent,
+            }),
+          });
+
+          if (!aiResponse.ok) {
+            const errorData = await aiResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to get AI response');
+          }
+
+          const aiData = await aiResponse.json();
+          
+          // Send AI's response as a new thread message with isAiResponse: true
+          console.log('ThreadView: Sending AI response with:', { content: aiData.response, isAiResponse: true });
+          await onSendMessage(aiData.response, true);
+        } catch (error) {
+          console.error('Error in AI flow:', error);
+          setError(error instanceof Error ? error.message : 'Failed to process AI response');
+          
+          // Remove optimistic message on error
+          setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        // Regular message sending
+        try {
+          // Send message with attachments
+          await onSendMessage(messageContent, false, stagedAttachments);
+        } catch (error) {
+          console.error('Error sending message:', error);
+          setError(error instanceof Error ? error.message : 'Failed to send message');
+          
+          // Remove optimistic message on error
+          setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
+        }
+      }
+    } catch (error) {
+      console.error('Error in thread message flow:', error);
+      setError(error instanceof Error ? error.message : 'Failed to process message');
+      
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
+    }
+  };
 
   const formatTime = (dateString: string) => {
     const date = new Date(dateString)
@@ -438,7 +629,11 @@ export function ThreadView({
       <div className="flex-1 overflow-y-auto" ref={messageContainerRef}>
         <div className="p-4 space-y-4">
           {/* Root message */}
-          <div className="group relative flex w-full hover:bg-gray-100 px-2 rounded-md"
+          <div className={`group relative flex w-full px-2 ${
+            rootMessage.isAiResponse 
+              ? 'bg-blue-50 hover:bg-blue-100' 
+              : 'hover:bg-gray-100'
+          }`}
                onMouseEnter={() => setHoveredMessageId(rootMessage.id)}
                onMouseLeave={() => setHoveredMessageId(null)}>
             <div className="flex">
@@ -459,13 +654,14 @@ export function ThreadView({
             </div>
             <div className="flex-grow min-w-0 max-w-full">
               <div className="flex items-center h-6">
-                <div className="font-semibold truncate leading-6">{rootMessage.user.name || 'Unknown User'}</div>
+                <div className={`font-semibold truncate leading-6 ${rootMessage.isAiResponse ? 'text-blue-600' : ''}`}>{rootMessage.user.name || 'Unknown User'}</div>
                 <div className="text-xs text-gray-500 ml-2 flex-shrink-0 leading-6">
                   {new Date(rootMessage.createdAt).toLocaleTimeString()}
                 </div>
               </div>
-              <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px]">
+              <div className={`break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px] ${rootMessage.isAiResponse ? 'text-blue-600' : ''}`}>
                 {rootMessage.content}
+                {rootMessage.attachments?.map(attachment => renderAttachment(attachment))}
               </div>
               {rootMessage.reactions?.length > 0 && (
                 <div className="pb-1">
@@ -510,7 +706,10 @@ export function ThreadView({
             {/* Thread messages */}
             {messages.map((message, index) => {
               const prevMessage = messages[index - 1];
-              const isConsecutive = prevMessage && prevMessage.user.id === message.user.id;
+              const isConsecutive = prevMessage && 
+                    prevMessage.user.id === message.user.id && 
+                    !message.isAiResponse && 
+                    !prevMessage.isAiResponse;
               const currentDate = new Date(message.createdAt);
               const prevDate = prevMessage ? new Date(prevMessage.createdAt) : null;
               const isNewDay = !prevDate || 
@@ -535,7 +734,11 @@ export function ThreadView({
               if (!isConsecutive) {
                 elements.push(
                   <div key={message.id} 
-                       className={`group relative flex w-full hover:bg-gray-100 px-2 rounded-md ${index > 0 ? 'mt-3' : ''}`}
+                       className={`group relative flex w-full px-2 ${
+                         message.isAiResponse 
+                           ? 'bg-blue-50 hover:bg-blue-100' 
+                           : 'hover:bg-gray-100'
+                       } ${index > 0 ? 'mt-3' : ''}`}
                        onMouseEnter={() => setHoveredMessageId(message.id)}
                        onMouseLeave={() => setHoveredMessageId(null)}
                        data-message-id={message.id}>
@@ -557,13 +760,14 @@ export function ThreadView({
                     </div>
                     <div className="flex-grow min-w-0 max-w-full">
                       <div className="flex items-center h-6">
-                        <div className="font-semibold truncate leading-6">{message.user.name || 'Unknown User'}</div>
+                        <div className={`font-semibold truncate leading-6 ${message.isAiResponse ? 'text-blue-600' : ''}`}>{message.user.name || 'Unknown User'}</div>
                         <div className="text-xs text-gray-500 ml-2 flex-shrink-0 leading-6">
                           {new Date(message.createdAt).toLocaleTimeString()}
                         </div>
                       </div>
-                      <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px]">
+                      <div className={`break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px] ${message.isAiResponse ? 'text-blue-600' : ''}`}>
                         {message.content}
+                        {message.attachments?.map(attachment => renderAttachment(attachment))}
                       </div>
                       {message.reactions?.length > 0 && (
                         <div className="pb-1">
@@ -603,7 +807,11 @@ export function ThreadView({
               } else {
                 elements.push(
                   <div key={message.id} 
-                       className="group relative flex w-full hover:bg-gray-100 px-2 rounded-md"
+                       className={`group relative flex w-full px-2 ${
+                         message.isAiResponse 
+                           ? 'bg-blue-50 hover:bg-blue-100' 
+                           : 'hover:bg-gray-100'
+                       }`}
                        onMouseEnter={() => setHoveredMessageId(message.id)}
                        onMouseLeave={() => setHoveredMessageId(null)}
                        data-message-id={message.id}>
@@ -623,6 +831,7 @@ export function ThreadView({
                     <div className="flex-grow min-w-0 max-w-full">
                       <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[10px] py-[2px]">
                         {message.content}
+                        {message.attachments?.map(attachment => renderAttachment(attachment))}
                       </div>
                       {message.reactions?.length > 0 && (
                         <div className="pb-1">
@@ -668,22 +877,97 @@ export function ThreadView({
 
       {/* Input area */}
       <div className="p-4 border-t">
+        {/* Show staged attachments */}
+        {stagedAttachments.length > 0 && (
+          <div className="mb-2 space-y-2">
+            {stagedAttachments.map((attachment, index) => (
+              <div key={index} className="flex items-center space-x-2 bg-gray-50 p-2 rounded-md">
+                <Paperclip className="w-4 h-4 text-gray-500" />
+                <span className="flex-1 truncate text-sm">{attachment.name}</span>
+                <button
+                  onClick={() => removeStagedAttachment(index)}
+                  className="text-gray-500 hover:text-red-500"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setIsAiEnabled(!isAiEnabled)}
+            className={`p-2 rounded-md mr-2 ${
+              isAiEnabled 
+                ? 'bg-blue-100 text-blue-600 hover:bg-blue-200' 
+                : 'hover:bg-gray-100'
+            }`}
+            title={isAiEnabled ? 'Disable AI responses' : 'Enable AI responses'}
+          >
+            {isAiEnabled ? (
+              <Bot className="w-5 h-5" />
+            ) : (
+              <BotOff className="w-5 h-5" />
+            )}
+          </button>
+
           <Input
             type="text"
-            placeholder="Reply in thread..."
+            placeholder={isLoading ? 'Getting AI response...' : 'Reply in thread...'}
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage();
+              }
+            }}
+            disabled={isLoading}
             ref={inputRef}
           />
+
+          <input
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+            ref={fileInputRef}
+          />
+
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isLoading}
+            className="px-2"
+          >
+            <Paperclip className="h-5 w-5" />
+          </Button>
+
           <Button 
             onClick={handleSendMessage}
-            disabled={!newMessage.trim()}
+            disabled={(!newMessage.trim() && stagedAttachments.length === 0) || isLoading}
           >
-            <Send className="h-5 w-5" />
+            {isLoading ? (
+              <div className="w-5 h-5 animate-spin rounded-full border-2 border-gray-300 border-t-white" />
+            ) : (
+              <Send className="h-5 w-5" />
+            )}
           </Button>
         </div>
+
+        {/* Upload progress indicators */}
+        {Object.entries(uploadingFiles).length > 0 && (
+          <div className="mt-2 space-y-2">
+            {Object.entries(uploadingFiles).map(([id, { name }]) => (
+              <div key={id} className="flex items-center space-x-2">
+                <div className="w-4 h-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
+                <span className="text-sm text-gray-600">{name}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

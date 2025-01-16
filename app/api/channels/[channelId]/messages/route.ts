@@ -81,6 +81,7 @@ export async function GET(
       user: message.user,
       reactions: message.reactions,
       attachments: message.attachments,
+      isAiResponse: message.isAiResponse,
       thread: message._count.threadReplies > 0 ? {
         id: message.id, // Use message ID as thread ID
         messageCount: message._count.threadReplies
@@ -130,9 +131,13 @@ export async function POST(
         content: body.content,
         channelId: params.channelId,
         userId: session.user.id,
+        isAiResponse: body.isAiResponse || false,
         attachments: body.attachments ? {
           createMany: {
-            data: body.attachments
+            data: body.attachments.map((attachment: any) => ({
+              ...attachment,
+              userId: session.user.id
+            }))
           }
         } : undefined
       },

@@ -34,7 +34,8 @@ export async function POST(
       },
       select: {
         id: true,
-        channelId: true
+        channelId: true,
+        attachments: true
       }
     })
 
@@ -43,12 +44,28 @@ export async function POST(
     }
 
     // Create the thread message
+    console.log('Thread API: Creating message with data:', {
+      content: body.content,
+      userId: session.user.id,
+      channelId: rootMessage.channelId,
+      parentMessageId: params.messageId,
+      isAiResponse: body.isAiResponse || false
+    });
     const threadMessage = await prisma.message.create({
       data: {
         content: body.content,
         userId: session.user.id,
         channelId: rootMessage.channelId,
-        parentMessageId: params.messageId
+        parentMessageId: params.messageId,
+        isAiResponse: body.isAiResponse || false,
+        attachments: body.attachments ? {
+          createMany: {
+            data: body.attachments.map((attachment: any) => ({
+              ...attachment,
+              userId: session.user.id
+            }))
+          }
+        } : undefined
       },
       include: {
         user: {
@@ -67,7 +84,8 @@ export async function POST(
               }
             }
           }
-        }
+        },
+        attachments: true
       }
     })
 
@@ -96,7 +114,8 @@ export async function POST(
               }
             }
           }
-        }
+        },
+        attachments: true
       }
     })
 
@@ -108,6 +127,11 @@ export async function POST(
     })
 
     // Also notify channel clients about the thread update
+    console.log('Thread API: Sending THREAD_UPDATED event:', {
+      type: 'THREAD_UPDATED',
+      threadId: params.messageId,
+      messageCount: threadMessages.length
+    });
     notifyChannelClients(rootMessage.channelId, {
       type: 'THREAD_UPDATED',
       threadId: params.messageId,
@@ -199,7 +223,8 @@ export async function GET(
               }
             }
           }
-        }
+        },
+        attachments: true
       }
     })
 
