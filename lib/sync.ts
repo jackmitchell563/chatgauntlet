@@ -13,6 +13,7 @@ interface MessageVector {
     userId: string;
     createdAt: string;
     workspaceId: string;
+    isAiResponse: boolean;
   }
 }
 
@@ -61,7 +62,8 @@ export async function syncMessagesToPinecone(messages: Awaited<ReturnType<typeof
         channelId: msg.channelId,
         userId: msg.userId,
         createdAt: msg.createdAt.toISOString(),
-        workspaceId: msg.channel.workspaceId
+        workspaceId: msg.channel.workspaceId,
+        isAiResponse: msg.isAiResponse || false
       }
     }));
 

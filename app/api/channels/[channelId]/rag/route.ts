@@ -6,10 +6,26 @@ import { PromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { Document } from '@langchain/core/documents';
 import { initPinecone } from '@/lib/sync';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/api/auth/[...nextauth]/options';
 
 // RAG Fusion query generation prompt
 const prompt = new PromptTemplate({
-  template: `Given a user question, generate multiple search queries that capture different aspects of the question.
+  template: `Given a user question, generate multiple search queries to find both similar questions AND their answers. For each aspect of the question:
+1. Generate a query to find similar questions
+2. Generate a query to find potential answers
+3. Rephrase the query to focus on the topic/subject matter
+
+Example:
+Question: "What's my favorite food?"
+Queries:
+- What's my favorite food
+- I love eating [food]
+- My preferred food is
+- Food preferences
+- Meals I enjoy the most
+- Dishes I frequently eat
+
 Question: {question}
 Queries:`,
   inputVariables: ["question"],
@@ -64,27 +80,70 @@ function reciprocalRankFusion(results: Document[][], k: number = 60): ScoredDocu
 
 // Context prompt template
 const contextPromptTemplate = new PromptTemplate({
-  template: `You are a helpful AI assistant in a chat application. Use the provided context from previous messages to help answer the user's question. Keep your response concise and natural, as if you're having a conversation.
+  template: `You are an AI assistant tasked with responding in a way that mimics the writing style of the user. The provided context contains messages written by this user. 
+
+First, analyze their writing style:
+- Vocabulary choices
+- Sentence structure
+- Message length
+- Tone and formality level
+- Use of punctuation and formatting
+
+Then, analyze the context messages to distinguish between:
+1. Questions the user has asked (less relevant)
+2. Statements and responses the user has made (more relevant)
+3. Personal preferences and opinions expressed (most relevant)
+
+Focus primarily on the user's statements and expressions of preference rather than their questions when formulating your response.
 
 User Question: {query}
 
-Context from chat history:
+Context (Previous messages by this user):
 {context}
 
-Assistant Response:`,
+Respond to the question while:
+1. Using the most relevant information from their statements and preferences
+2. Carefully mimicking their writing style
+3. Maintaining their typical message length and tone`,
   inputVariables: ["query", "context"]
 });
 
 // Function to format documents into a string for context
 function formatDocumentsForContext(documents: ScoredDocument[]): string {
-  return documents
-    .map(doc => `Message: ${doc.document.pageContent}\nRelevance Score: ${doc.score}\n`)
+  // Analyze each document to determine if it's a question or statement
+  const analyzedDocs = documents.map(doc => {
+    const content = doc.document.pageContent;
+    const isQuestion = content.trim().endsWith('?') || 
+                      content.toLowerCase().startsWith('what') ||
+                      content.toLowerCase().startsWith('who') ||
+                      content.toLowerCase().startsWith('where') ||
+                      content.toLowerCase().startsWith('when') ||
+                      content.toLowerCase().startsWith('why') ||
+                      content.toLowerCase().startsWith('how');
+    
+    // Adjust score based on document type
+    const adjustedScore = isQuestion ? doc.score * 0.7 : doc.score * 1.2;
+    
+    return {
+      content,
+      score: adjustedScore,
+      type: isQuestion ? 'question' : 'statement'
+    };
+  });
+
+  // Sort by adjusted scores
+  analyzedDocs.sort((a, b) => b.score - a.score);
+
+  // Format the context string with type labels
+  return analyzedDocs
+    .map(doc => `Message Type: ${doc.type}\nContent: ${doc.content}\nRelevance Score: ${doc.score.toFixed(4)}\n`)
     .join('\n');
 }
 
 // Main RAG pipeline
-async function ragPipeline(query: string) {
+async function ragPipeline(query: string, userId: string) {
   console.log('Starting RAG pipeline with query:', query);
+  console.log('Filtering for userId:', userId);
   
   const pineconeIndex = await initPinecone();
   const embeddings = new OpenAIEmbeddings({
@@ -93,7 +152,12 @@ async function ragPipeline(query: string) {
   
   const vectorStore = new PineconeStore(embeddings, { pineconeIndex });
   console.log('Vector store initialized');
-  const retriever = vectorStore.asRetriever();
+  const retriever = vectorStore.asRetriever({
+    filter: {
+      userId: userId,
+      isAiResponse: { $ne: true }
+    }
+  });
   
   // Generate multiple queries
   console.log('Generating multiple queries...');
@@ -119,7 +183,7 @@ async function ragPipeline(query: string) {
     console.log(`Content: ${doc.document.pageContent}`);
     console.log(`Metadata: ${JSON.stringify(doc.document.metadata, null, 2)}`);
   });
-  console.log('\n'); // Add spacing after documents
+  console.log('\n');
   
   return rerankedResults;
 }
@@ -157,6 +221,11 @@ export async function POST(
   { params }: { params: { channelId: string } }
 ) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { message } = await req.json();
     
     if (!message) {
@@ -164,7 +233,7 @@ export async function POST(
     }
 
     // Get relevant documents using RAG pipeline
-    const rankedDocs = await ragPipeline(message);
+    const rankedDocs = await ragPipeline(message, session.user.id);
     console.log('Retrieved and ranked relevant documents');
     
     // Format documents for context

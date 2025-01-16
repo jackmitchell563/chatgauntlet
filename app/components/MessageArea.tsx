@@ -1154,16 +1154,18 @@ export function MessageArea({
               <div className="pb-6">
                 {messages.reduce((acc, message, index) => {
                   const prevMessage = messages[index - 1];
-                  const isConsecutive = prevMessage && 
-                    prevMessage.user.id === message.user.id && 
-                    !message.isAiResponse && 
-                    !prevMessage.isAiResponse;
                   const currentDate = new Date(message.createdAt);
                   const prevDate = prevMessage ? new Date(prevMessage.createdAt) : null;
                   const isNewDay = !prevDate || 
                     currentDate.getDate() !== prevDate.getDate() || 
                     currentDate.getMonth() !== prevDate.getMonth() || 
                     currentDate.getFullYear() !== prevDate.getFullYear();
+
+                  const isConsecutive = prevMessage && 
+                    prevMessage.user.id === message.user.id && 
+                    !message.isAiResponse && 
+                    !prevMessage.isAiResponse &&
+                    !isNewDay;
 
                   // Add date separator if it's a new day
                   if (isNewDay) {
