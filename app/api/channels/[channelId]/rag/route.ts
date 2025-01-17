@@ -318,7 +318,7 @@ export async function POST(
 
     // Wait for webhook callback with video URL
     console.log('Waiting for video generation...');
-    let videoUrl: string | null = null;
+    let videoUrl: string;
     try {
       // Set up a race between webhook and polling
       videoUrl = await Promise.race([
@@ -327,12 +327,12 @@ export async function POST(
       ]);
     } catch (error) {
       console.error('Error waiting for video:', error);
-      // Continue without video URL instead of throwing
-      console.log('Proceeding without video due to timeout or error');
+      throw new Error('Failed to get video URL');
     }
+    console.log('Video generation complete:', videoUrl);
 
-    // Only prepend video URL if we got one successfully
-    const finalResponse = videoUrl ? `${videoUrl} ${aiResponse}` : aiResponse;
+    // Prepend video URL to AI response
+    const finalResponse = `${videoUrl} ${aiResponse}`;
     
     return NextResponse.json({ 
       response: finalResponse,
