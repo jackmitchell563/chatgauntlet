@@ -1080,15 +1080,19 @@ export function MessageArea({
 
   // Function to detect and render MP4 links in message content
   const renderMessageContent = (content: string) => {
-    // Regular expression to match MP4 links
-    const mp4Regex = /(https?:\/\/[^\s<]+?\.mp4)\b/g
+    // Regular expression to match MP4 links including query parameters
+    const mp4Regex = /(https?:\/\/[^\s<]+?\.mp4(?:\?[^\s<]+)?)\b/g
+
     const parts = content.split(mp4Regex)
     
     if (parts.length === 1) return content
 
+    // Filter out empty strings and query parameters that might have been split
+    const cleanParts = parts.filter(part => !part.startsWith('?') && part.trim() !== '')
+
     return (
       <>
-        {parts.map((part, i) => {
+        {cleanParts.map((part, i) => {
           if (mp4Regex.test(part)) {
             return (
               <div key={i} className="mt-2 relative rounded-lg overflow-hidden max-w-lg">
@@ -1103,7 +1107,7 @@ export function MessageArea({
               </div>
             )
           }
-          return part
+          return part.trim()
         })}
       </>
     )

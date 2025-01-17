@@ -8,6 +8,18 @@ import { Document } from '@langchain/core/documents';
 import { initPinecone } from '@/lib/sync';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/api/auth/[...nextauth]/options';
+import { registerPendingResponse } from '@/app/api/webhook/d-id/pending-responses';
+
+// D-ID API configuration
+const DID_API_URL = 'https://api.d-id.com';
+const DID_USERNAME = process.env.DID_USERNAME;
+const DID_PASSWORD = process.env.DID_PASSWORD;
+const DEFAULT_AVATAR_URL = 'https://chatgauntlet.onrender.com/icons/defaultavatar.png';
+const POLLING_TIMEOUT = 30000; // 30 seconds timeout
+
+if (!DID_USERNAME || !DID_PASSWORD) {
+  console.error('D-ID credentials not configured');
+}
 
 // RAG Fusion query generation prompt
 const prompt = new PromptTemplate({
@@ -216,6 +228,37 @@ async function getAIResponseWithContext(query: string, context: string): Promise
   return '';
 }
 
+// Function to poll for video completion
+async function pollForCompletion(talkId: string): Promise<string> {
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < POLLING_TIMEOUT) {
+    const response = await fetch(`${DID_API_URL}/talks/${talkId}`, {
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`${DID_USERNAME}:${DID_PASSWORD}`).toString('base64')}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      console.error('Error polling D-ID:', await response.text());
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    const data = await response.json();
+    console.log('Poll response:', data);
+
+    if (data.status === 'done' && data.result_url) {
+      return data.result_url;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  throw new Error('Polling timeout exceeded');
+}
+
 export async function POST(
   req: Request,
   { params }: { params: { channelId: string } }
@@ -244,9 +287,55 @@ export async function POST(
     console.log('Getting AI response...');
     const aiResponse = await getAIResponseWithContext(message, context);
     console.log('Received AI response');
+
+    // Start D-ID video generation
+    console.log('Starting video generation...');
+    const didResponse = await fetch(`${DID_API_URL}/talks`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`${DID_USERNAME}:${DID_PASSWORD}`).toString('base64')}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        script: {
+          type: 'text',
+          input: aiResponse
+        },
+        source_url: session.user.image || "https://chatgeniusbucket563.s3.us-east-2.amazonaws.com/uploads/cm5lnspde0000c9l4ikuxanee/324bf7f504e428a5019f6e70ceb9a1ac.jpeg",
+        webhook: 'https://chatgauntlet.onrender.com/api/webhook/d-id'
+      })
+    });
+
+    if (!didResponse.ok) {
+      const error = await didResponse.json();
+      console.error('D-ID API error:', error);
+      throw new Error('Failed to start video generation');
+    }
+
+    const { id: talkId } = await didResponse.json();
+    console.log('Video generation started:', talkId);
+
+    // Wait for webhook callback with video URL
+    console.log('Waiting for video generation...');
+    let videoUrl: string | null = null;
+    try {
+      // Set up a race between webhook and polling
+      videoUrl = await Promise.race([
+        registerPendingResponse(talkId),
+        pollForCompletion(talkId)
+      ]);
+    } catch (error) {
+      console.error('Error waiting for video:', error);
+      // Continue without video URL instead of throwing
+      console.log('Proceeding without video due to timeout or error');
+    }
+
+    // Only prepend video URL if we got one successfully
+    const finalResponse = videoUrl ? `${videoUrl} ${aiResponse}` : aiResponse;
     
     return NextResponse.json({ 
-      response: aiResponse,
+      response: finalResponse,
       context: rankedDocs.map(doc => ({
         content: doc.document.pageContent,
         metadata: doc.document.metadata,
