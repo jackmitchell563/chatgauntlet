@@ -71,7 +71,7 @@ function UserProfile({ user }: UserProfileProps) {
     <div className="p-4 w-72">
       <div className="flex items-center space-x-4">
         <UserAvatar 
-          src={user.image || undefined}
+          src={user.image || '/icons/defaultavatar.png'}
           alt={user.name || 'Unknown User'} 
           size={64}
         />
@@ -435,6 +435,7 @@ export function ThreadView({
 
   const renderAttachment = (attachment: NonNullable<ThreadMessage['attachments']>[number]) => {
     const isImage = attachment.type.startsWith('image/')
+    const isVideo = attachment.type === 'video/mp4'
     
     return (
       <div key={attachment.id} className="mt-2">
@@ -448,6 +449,17 @@ export function ThreadView({
               className="object-contain w-full h-auto"
               style={{ maxHeight: '384px' }}
             />
+          </div>
+        ) : isVideo ? (
+          <div className="relative rounded-lg overflow-hidden max-w-lg">
+            <video 
+              controls
+              className="w-full max-h-[384px]"
+              preload="metadata"
+            >
+              <source src={attachment.url} type="video/mp4" />
+              Your browser does not support the video tag.
+            </video>
           </div>
         ) : (
           <a
@@ -464,6 +476,37 @@ export function ThreadView({
           </a>
         )}
       </div>
+    )
+  }
+
+  // Function to detect and render MP4 links in message content
+  const renderMessageContent = (content: string) => {
+    // Regular expression to match MP4 links
+    const mp4Regex = /(https?:\/\/[^\s<]+?\.mp4)\b/g
+    const parts = content.split(mp4Regex)
+    
+    if (parts.length === 1) return content
+
+    return (
+      <>
+        {parts.map((part, i) => {
+          if (mp4Regex.test(part)) {
+            return (
+              <div key={i} className="mt-2 relative rounded-lg overflow-hidden max-w-lg">
+                <video 
+                  controls
+                  className="w-full max-h-[384px]"
+                  preload="metadata"
+                >
+                  <source src={part} type="video/mp4" />
+                  Your browser does not support the video tag.
+                </video>
+              </div>
+            )
+          }
+          return part
+        })}
+      </>
     )
   }
 
@@ -641,7 +684,7 @@ export function ThreadView({
                 <PopoverTrigger asChild>
                   <div className="w-10 h-10 flex-shrink-0 mr-3 mt-[3px] cursor-pointer">
                     <UserAvatar 
-                      src={rootMessage.user.image || undefined}
+                      src={rootMessage.user.image || '/icons/defaultavatar.png'}
                       alt={rootMessage.user.name || 'Unknown User'} 
                       size={40}
                     />
@@ -660,7 +703,7 @@ export function ThreadView({
                 </div>
               </div>
               <div className={`break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px] ${rootMessage.isAiResponse ? 'text-blue-600' : ''}`}>
-                {rootMessage.content}
+                {renderMessageContent(rootMessage.content)}
                 {rootMessage.attachments?.map(attachment => renderAttachment(attachment))}
               </div>
               {rootMessage.reactions?.length > 0 && (
@@ -747,7 +790,7 @@ export function ThreadView({
                         <PopoverTrigger asChild>
                           <div className="w-10 h-10 flex-shrink-0 mr-3 mt-[3px] cursor-pointer">
                             <UserAvatar 
-                              src={message.user.image || undefined}
+                              src={message.user.image || '/icons/defaultavatar.png'}
                               alt={message.user.name || 'Unknown User'} 
                               size={40}
                             />
@@ -766,7 +809,7 @@ export function ThreadView({
                         </div>
                       </div>
                       <div className={`break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[24px] ${message.isAiResponse ? 'text-blue-600' : ''}`}>
-                        {message.content}
+                        {renderMessageContent(message.content)}
                         {message.attachments?.map(attachment => renderAttachment(attachment))}
                       </div>
                       {message.reactions?.length > 0 && (
@@ -830,7 +873,7 @@ export function ThreadView({
                     </div>
                     <div className="flex-grow min-w-0 max-w-full">
                       <div className="break-words whitespace-pre-wrap overflow-hidden leading-6 min-h-[10px] py-[2px]">
-                        {message.content}
+                        {renderMessageContent(message.content)}
                         {message.attachments?.map(attachment => renderAttachment(attachment))}
                       </div>
                       {message.reactions?.length > 0 && (

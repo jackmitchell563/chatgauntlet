@@ -21,6 +21,7 @@ const ALLOWED_FILE_TYPES = [
   'text/plain',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'video/mp4',
 ]
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
